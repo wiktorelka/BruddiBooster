@@ -111,6 +111,7 @@ When you run the app for the first time, a `users.json` file is generated automa
 
 This tool is for educational purposes. Using hour boosters may violate Steam's Terms of Service. Use at your own risk.
 
+---
 
 # 📝 Project Roadmap & Todo
 
