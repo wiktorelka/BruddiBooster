@@ -110,3 +110,26 @@ When you run the app for the first time, a `users.json` file is generated automa
 ## ⚠️ Disclaimer
 
 This tool is for educational purposes. Using hour boosters may violate Steam's Terms of Service. Use at your own risk.
+
+
+# 📝 Project Roadmap & Todo
+
+Here are the features planned for future updates of BruddiBooster.
+
+### 🚀 Upcoming Features
+- [ ] **Proxy Support:** Ability to assign individual HTTP/SOCKS5 proxies to accounts to prevent IP bans.
+- [ ] **Steam Chat:** View and reply to Steam friends directly from the dashboard.
+- [ ] **Auto-Accept Friends:** Configurable rules to auto-accept friend requests.
+- [ ] **Discord Webhooks:** Send notifications to Discord when an account goes offline or needs a Guard code.
+- [ ] **Docker Support:** Create a `Dockerfile` for easy one-click deployment.
+
+### 🎨 UI/UX Improvements
+- [ ] **Dark/Light Mode Toggle:** Switch between themes.
+- [ ] **Mobile View:** Better responsiveness for managing accounts on phones.
+- [ ] **Live Logs:** Real-time log streaming via WebSockets instead of refreshing.
+
+### 🐛 Known Issues
+- None at the moment!
+
+---
+*Have a suggestion? Open an issue!*
