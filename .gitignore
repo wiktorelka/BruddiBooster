@@ -1,0 +1,7 @@
+node_modules/
+accounts/
+secret.key
+users.json
+sessions.json
+config.json
+package-lock.json
