@@ -102,10 +102,10 @@ function renderTable(accounts) {
     if (!rebuild) {
         accounts.forEach(acc => {
             const row = document.getElementById(`tr-${acc.username}`);
-            const newStatus = getStatusHtml(acc); if (row.cells[1].innerHTML !== newStatus) row.cells[1].innerHTML = newStatus;
-            const newHours = `${acc.grandTotal}h`; if (row.cells[2].innerText !== newHours) row.cells[2].innerText = newHours;
+                    const newStatus = getStatusHtml(acc); if (row.cells[2].innerHTML !== newStatus) row.cells[2].innerHTML = newStatus;
+                    const newHours = `${acc.grandTotal}h`; if (row.cells[3].innerText !== newHours) row.cells[3].innerText = newHours;
             const hasStopBtn = row.querySelector('.btn-stop-action'); const isRunning = acc.status === 'Running';
-            if ((isRunning && !hasStopBtn) || (!isRunning && hasStopBtn)) row.cells[3].innerHTML = `<div class="actions">${getActionsHtml(acc)}</div>`;
+                    if ((isRunning && !hasStopBtn) || (!isRunning && hasStopBtn)) row.cells[4].innerHTML = `<div class="actions">${getActionsHtml(acc)}</div>`;
         });
         return;
     }
@@ -120,7 +120,7 @@ function renderTable(accounts) {
         const isExpanded = categoryStates[safeId] !== undefined ? categoryStates[safeId] : true;
         const section = document.createElement('div');
         section.className = 'category-section';
-        section.innerHTML = `<div class="category-header" onclick="toggleCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="cat-body-${safeId}"><div class="panel"><table><thead><tr><th>User</th><th>Status</th><th>Hours</th><th>Actions</th></tr></thead><tbody id="tbody-${safeId}"></tbody></table></div></div>`;
+        section.innerHTML = `<div class="category-header" onclick="toggleCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="cat-body-${safeId}"><div class="panel"><table><thead><tr><th style="width:40px;text-align:center;"><input type="checkbox" onchange="toggleCategorySelect(this, ${safeId})"></th><th>User</th><th>Status</th><th>Hours</th><th>Actions</th></tr></thead><tbody id="tbody-${safeId}"></tbody></table></div></div>`;
         container.appendChild(section);
         const tbody = document.getElementById(`tbody-${safeId}`);
         groups[cat].forEach(acc => tbody.appendChild(createAccountRow(acc)));
@@ -133,7 +133,7 @@ function createAccountRow(acc) {
         const tr = document.createElement('tr');
         tr.id = `tr-${acc.username}`;
         tr.dataset.category = acc.category || 'Default';
-        tr.innerHTML = `<td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:white;font-weight:600;">${acc.grandTotal}h</td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
+        tr.innerHTML = `<td style="text-align:center;"><input type="checkbox" class="acc-select" value="${acc.username}" onchange="updateBulkUI()"></td><td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:white;font-weight:600;">${acc.grandTotal}h</td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
         return tr;
 }
 
@@ -333,4 +333,36 @@ function renderLogs() {
     const q = document.getElementById('logSearch').value.toLowerCase();
     const filtered = cachedLogs.filter(l => l.toLowerCase().includes(q));
     document.getElementById('logsContainer').innerHTML = filtered.map(m=>`<div class="log-line">${m}</div>`).join('');
+}
+
+function toggleCategorySelect(cb, id) {
+    const tbody = document.getElementById(`tbody-${id}`);
+    if(tbody) {
+        const checkboxes = tbody.querySelectorAll('.acc-select');
+        checkboxes.forEach(c => c.checked = cb.checked);
+        updateBulkUI();
+    }
+}
+
+function updateBulkUI() {
+    const selected = document.querySelectorAll('.acc-select:checked');
+    const bar = document.getElementById('bulkActionsBar');
+    if (selected.length > 0) {
+        bar.style.display = 'flex';
+        document.getElementById('selectedCount').innerText = selected.length;
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+async function bulkAction(action) {
+    const selected = Array.from(document.querySelectorAll('.acc-select:checked')).map(c => c.value);
+    if (selected.length === 0) return;
+    if (action === 'delete' && !confirm(`Delete ${selected.length} accounts?`)) return;
+    showToast(`Processing ${action} for ${selected.length} accounts...`, 'fa-gear');
+    for (const username of selected) { await apiCall(`/api/${action}`, 'POST', { username }); }
+    document.querySelectorAll('.acc-select').forEach(c => c.checked = false);
+    document.querySelectorAll('input[onchange^="toggleCategorySelect"]').forEach(c => c.checked = false);
+    updateBulkUI();
+    fetchAccounts();
 }
