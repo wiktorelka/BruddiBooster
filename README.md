@@ -8,12 +8,25 @@
 
 ---
 
-## 📸 Screenshots
+## ✨ Showcase
 
-| **Modern Dashboard** | **Settings & Security** |
+### 📊 Dashboard & Overview
+| **Main Dashboard** | **Mobile View** |
 |:---:|:---:|
-| ![Dashboard Preview](https://i.imgur.com/qDmMqJq.png) | ![Settings Page](https://i.imgur.com/1JHsrQH.png) |
-| *Real-time stats and account management* | *2FA setup and password management* |
+| ![Dashboard Preview](https://i.imgur.com/cmiF90W.png) | ![Mobile Preview](https://i.imgur.com/XDnbyrZ.png) |
+| *Real-time stats and account management* | *Fully responsive design* |
+
+### 🛠️ Advanced Tools
+| **Proxy Manager** | **Free Games Selector** |
+|:---:|:---:|
+| ![Proxy Manager](https://i.imgur.com/6gxqkUD.png) | ![Free Games](https://i.imgur.com/Jwl5IQo.png) |
+| *Bulk import and test proxies* | *Add free games to library easily* |
+
+### ⚙️ Configuration
+| **Settings & Security** | **Game Bundles** |
+|:---:|:---:|
+| ![Settings Page](https://i.imgur.com/M5cEBe6.png) | ![Bundles](https://i.imgur.com/vYxC9DB.png) |
+| *2FA setup and password management* | *Manage game presets* |
 
 ---
 
@@ -53,6 +66,9 @@ Your data security is the top priority of this project.
 * **Smart Logging:** Detailed error reporting (e.g., Incorrect Password, Steam Guard required) saved directly to the dashboard with tooltip hints.
 * **Visual Status:** Clear indicators for running bots, 2FA status, and error messages.
 * **Category System:** Organize accounts into "Main", "Smurfs", "Storage", etc.
+* **Live Logs:** Real-time log streaming via WebSockets.
+* **Mobile Ready:** Fully responsive design for mobile management.
+* **Dark/Light Mode:** Toggle between themes in settings.
 
 ---
 
@@ -131,11 +147,6 @@ Here are the features planned for future updates of BruddiBooster.
 - [x] **Game Rotation:** Idle more than 32 games.
 - [ ] **Steam Chat:** View and reply to Steam friends directly from the dashboard.
 - [ ] **Docker Support:** Create a `Dockerfile` for easy one-click deployment.
-
-### 🎨 UI/UX Improvements
-- [ ] **Dark/Light Mode Toggle:** Switch between themes.
-- [ ] **Mobile View:** Better responsiveness for managing accounts on phones.
-- [ ] **Live Logs:** Real-time log streaming via WebSockets instead of refreshing.
 
 ### 🐛 Known Issues
 - None at the moment!
