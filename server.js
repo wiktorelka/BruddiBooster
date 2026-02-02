@@ -126,7 +126,11 @@ app.post('/api/accounts/bulk_update', (req, res) => {
         const changes = { ...globalChanges, ...u };
         const acc = getAccount(changes.username);
         if (acc) {
-            if (changes.proxy !== undefined) acc.proxy = changes.proxy;
+            let proxyChanged = false;
+            if (changes.proxy !== undefined && changes.proxy !== acc.proxy) {
+                acc.proxy = changes.proxy;
+                proxyChanged = true;
+            }
             if (changes.category !== undefined) acc.category = changes.category;
             if (changes.autoStart !== undefined) acc.autoStart = changes.autoStart;
             if (changes.autoAccept !== undefined) acc.autoAccept = changes.autoAccept;
@@ -141,6 +145,15 @@ app.post('/api/accounts/bulk_update', (req, res) => {
             }
 
             saveAccount(acc);
+            
+            // Restart if proxy changed and bot is running
+            if (proxyChanged) {
+                const bot = activeBots[acc.username];
+                if (bot && (bot.status === 'Running' || bot.status === 'Logging in...' || bot.status.includes('Rate Limit'))) {
+                    stopBot(acc.username);
+                    setTimeout(() => startBotProcess(acc), 1000);
+                }
+            }
             
             // Bulk Profile (Avatar, Privacy) - Only works if bot is running
             if (changes.avatar || changes.privacy) { try { updateProfile(acc.username, { avatar: changes.avatar, privacy: changes.privacy }); } catch(e){} }
@@ -180,7 +193,8 @@ app.get('/api/accounts', (req, res) => {
             nextRotation: b ? b.nextRotation : null,
             grandTotal: acc.grandTotal || "0.0", steamId: acc.steamId || null, games: (acc.games||[]).map(id => ({ id, name: getGameName(id) })), 
             customStatus: acc.customStatus || "", addedAt: acc.addedAt || Date.now(), boostedHours: acc.boostedHours || 0, 
-            personaState: acc.personaState !== undefined ? acc.personaState : 1, category: acc.category || "Default", autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept, ip: displayIp
+            personaState: acc.personaState !== undefined ? acc.personaState : 1, category: acc.category || "Default", autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept, ip: displayIp,
+            proxy: acc.proxy || ""
         };
     }));
 });
@@ -306,8 +320,8 @@ app.post('/api/proxy/check', (req, res) => {
             host: u.hostname,
             port: u.port,
             method: 'GET',
-            path: 'http://api.ipify.org/',
-            headers: { 'Host': 'api.ipify.org' },
+            path: 'http://api.steampowered.com/ISteamDirectory/GetCMList/v1/?cellid=0',
+            headers: { 'Host': 'api.steampowered.com' },
             timeout: 5000
         };
         
@@ -317,9 +331,8 @@ app.post('/api/proxy/check', (req, res) => {
 
         const request = http.request(options, (response) => {
             if (response.statusCode === 200) {
-                let data = '';
-                response.on('data', (chunk) => data += chunk);
-                response.on('end', () => res.json({ success: true, ip: data.trim() }));
+                response.resume(); // Consume data stream
+                res.json({ success: true, ip: "Steam Reachable" });
             } else {
                 res.json({ success: false, msg: `HTTP ${response.statusCode}` });
             }

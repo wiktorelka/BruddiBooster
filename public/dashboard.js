@@ -713,23 +713,38 @@ async function submitFreeGames() {
 async function fetchProxiesView() {
     const accounts = await apiCall('/api/accounts'); // Re-fetch to get latest proxy data
     const tbody = document.getElementById('proxiesTableBody');
-    tbody.innerHTML = accounts.map(a => `<tr><td style="color:var(--text-main);">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button></td></tr>`).join('');
+    tbody.innerHTML = accounts.map(a => `<tr><td style="color:var(--text-main);">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><div class="actions"><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button><button class="icon-btn" onclick="saveProxy('${a.username}')" title="Apply Proxy"><i class="fa-solid fa-check"></i></button></div></td></tr>`).join('');
 }
 
-async function checkProxy(username) {
+async function checkProxy(username, silent = false) {
     const input = document.getElementById(`proxy-${username}`);
     const proxy = input.value.trim();
-    if (!proxy) return showToast('Enter a proxy first', 'fa-circle-exclamation');
+    if (!proxy) {
+        if(!silent) showToast('Enter a proxy first', 'fa-circle-exclamation');
+        return false;
+    }
     
-    showToast('Testing connection...', 'fa-spinner fa-spin');
+    if(!silent) showToast('Testing connection...', 'fa-spinner fa-spin');
     const res = await apiCall('/api/proxy/check', 'POST', { proxy });
     
     if (res && res.success) {
-        showToast(`Success! IP: ${res.ip}`, 'fa-check');
+        if(!silent) showToast(`Success! IP: ${res.ip}`, 'fa-check');
         input.style.borderColor = 'var(--status-green)';
+        return true;
     } else {
-        showToast(`Failed: ${res ? res.msg : 'Error'}`, 'fa-circle-xmark');
+        if(!silent) showToast(`Failed: ${res ? res.msg : 'Error'}`, 'fa-circle-xmark');
         input.style.borderColor = 'var(--btn-red)';
+        return false;
+    }
+}
+
+async function saveProxy(username) {
+    const input = document.getElementById(`proxy-${username}`);
+    const proxy = input.value.trim();
+    const res = await apiCall('/api/accounts/bulk_update', 'POST', { updates: [{ username, proxy }] });
+    if (res && res.success) {
+        showToast('Proxy Applied', 'fa-check');
+        input.style.borderColor = ''; 
     }
 }
 
@@ -739,6 +754,56 @@ async function saveAllProxies() {
     inputs.forEach(inp => { updates.push({ username: inp.dataset.user, proxy: inp.value.trim() }); });
     const res = await apiCall('/api/accounts/bulk_update', 'POST', { updates });
     if (res && res.success) showToast('Proxies Saved', 'fa-floppy-disk');
+}
+
+function openBulkProxyModal() {
+    document.getElementById('bulkProxyInput').value = '';
+    document.getElementById('bulkProxyRatio').value = '1';
+    document.getElementById('bulkProxyModal').style.display = 'flex';
+}
+
+async function submitBulkProxyImport() {
+    const text = document.getElementById('bulkProxyInput').value.trim();
+    if (!text) return alert("Please enter proxies.");
+    
+    const proxies = text.split(/\r?\n/).filter(l => l.trim() !== '');
+    if (proxies.length === 0) return alert("No valid proxies found.");
+
+    const inputs = document.querySelectorAll('.proxy-input');
+    if (inputs.length === 0) return alert("No accounts found in list. Please go to Proxy Manager tab first.");
+
+    const ratio = parseInt(document.getElementById('bulkProxyRatio').value) || 1;
+
+    if (!confirm(`Distribute ${proxies.length} proxies across ${inputs.length} accounts (1 proxy per ${ratio} accounts)? This will update the list below but NOT save to disk yet.`)) return;
+
+    inputs.forEach((input, index) => {
+        const proxyIndex = Math.floor(index / ratio) % proxies.length;
+        input.value = proxies[proxyIndex];
+        input.style.borderColor = ''; // Reset status
+    });
+
+    closeModals();
+    showToast(`Distributed proxies to ${inputs.length} accounts. Please Test and Save.`, 'fa-info-circle');
+}
+
+async function testAllProxies() {
+    const inputs = document.querySelectorAll('.proxy-input');
+    let count = 0;
+    inputs.forEach(i => { if(i.value.trim()) count++; });
+    
+    if(count === 0) return showToast("No proxies to test", "fa-circle-exclamation");
+    
+    showToast(`Testing ${count} proxies...`, "fa-stethoscope");
+    
+    let successCount = 0;
+    for (const input of inputs) {
+        if (input.value.trim()) {
+            const result = await checkProxy(input.dataset.user, true);
+            if (result) successCount++;
+        }
+    }
+    
+    showToast(`Testing Complete. ${successCount}/${count} working.`, "fa-check-double");
 }
 
 async function restartAllBots() {
