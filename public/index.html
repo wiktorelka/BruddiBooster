@@ -10,6 +10,7 @@
         :root { --bg-body: #0b0e14; --bg-card: #151a21; --bg-input: #0b0e14; --accent: #3b99fc; --accent-hover: #2b82e0; --text-main: #ffffff; --text-muted: #6e7681; --border: #232830; --btn-red: #d94545; --status-green: #4ade80; --status-yellow: #facc15; }
         * { box-sizing: border-box; }
         body { margin: 0; font-family: 'Inter', sans-serif; background-color: var(--bg-body); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; }
+        #app-root { display: flex; width: 100%; height: 100%; }
         .hidden { display: none !important; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: var(--bg-dark); }
@@ -115,6 +116,18 @@
         .library-list { max-height: 150px; overflow-y: auto; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
         .library-item { background: #232830; padding: 8px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid transparent; transition: 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .library-item:hover { border-color: var(--accent); color: white; }
+        .category-header { background: var(--bg-card); padding: 15px 20px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; transition: 0.2s; }
+        .category-header:hover { border-color: var(--accent); }
+        .category-body { display: block; margin-bottom: 20px; animation: fadeIn 0.3s; }
+        .category-body.hidden { display: none; }
+        .cat-icon { transition: transform 0.2s; }
+        .cat-icon.rotated { transform: rotate(180deg); }
+        .bundle-controls { display: flex; gap: 8px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border); align-items: center; }
+        .bundle-card { background: var(--bg-input); border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
+        .bundle-card h4 { margin: 0; color: white; font-size: 14px; }
+        .bundle-card span { font-size: 12px; color: var(--text-muted); }
+        .bundle-actions { display: flex; gap: 5px; margin-top: auto; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
@@ -127,247 +140,35 @@
             <p id="loginError" style="color: var(--btn-red); font-size: 12px; margin-top: 15px; display: none;">Invalid credentials</p>
         </div>
     </div>
+    <div id="app-root"></div>
+    <template id="protected-view">
     <div class="sidebar">
         <div class="brand"><i class="fa-brands fa-steam"></i> BruddiBooster</div>
-        <div class="menu"><div class="nav-item active" id="nav-dash" onclick="switchTab('dash')"><i class="fa-solid fa-server"></i> Dashboard</div><div class="nav-item" id="nav-logs" onclick="switchTab('logs')"><i class="fa-solid fa-terminal"></i> Logs</div><div class="nav-item" id="nav-users" onclick="switchTab('users')" style="display: none;"><i class="fa-solid fa-users"></i> Users</div><div class="nav-item" id="nav-settings" onclick="switchTab('settings')"><i class="fa-solid fa-gear"></i> Settings</div></div>
+        <div class="menu"><div class="nav-item active" id="nav-dash" onclick="switchTab('dash')"><i class="fa-solid fa-server"></i> Dashboard</div><div class="nav-item" id="nav-bundles" onclick="switchTab('bundles')"><i class="fa-solid fa-layer-group"></i> Bundles</div><div class="nav-item" id="nav-logs" onclick="switchTab('logs')"><i class="fa-solid fa-terminal"></i> Logs</div><div class="nav-item" id="nav-users" onclick="switchTab('users')" style="display: none;"><i class="fa-solid fa-users"></i> Users</div><div class="nav-item" id="nav-settings" onclick="switchTab('settings')"><i class="fa-solid fa-gear"></i> Settings</div></div>
         <div class="sidebar-footer"><button class="btn-logout" onclick="logout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</button></div>
     </div>
     <div class="main-content">
         <div id="view-dash">
             <div class="dash-stats-row"><div class="dash-card"><div class="dash-icon"><i class="fa-solid fa-users"></i></div><div class="dash-info"><span class="dash-label">Total Accounts</span><span class="dash-value" id="totalAccounts">0</span></div></div><div class="dash-card"><div class="dash-icon" style="color:var(--status-green); background:rgba(74,222,128,0.1);"><i class="fa-solid fa-play"></i></div><div class="dash-info"><span class="dash-label">Active Boosters</span><span class="dash-value" id="activeBoosters" style="color:var(--status-green)">0</span></div></div><div class="dash-card"><div class="dash-icon" style="color:#facc15; background:rgba(250,204,21,0.1);"><i class="fa-solid fa-clock"></i></div><div class="dash-info"><span class="dash-label">Total Hours Farmed</span><span class="dash-value" id="totalHours">0.0h</span></div></div></div>
-            <div class="header"><h1>Accounts</h1><div class="header-controls"><select id="categoryFilter" class="form-select" style="width: 150px;" onchange="fetchAccounts()"><option value="All">All Categories</option></select><button class="primary-btn" onclick="openBulkModal()"><i class="fa-solid fa-list-ul"></i> Bulk Add</button><button class="primary-btn" onclick="openAddModal()"><i class="fa-solid fa-plus"></i> Add Account</button></div></div>
-            <div class="panel"><table><thead><tr><th>User</th><th>Status</th><th>Hours</th><th>Actions</th></tr></thead><tbody id="accountTableBody"></tbody></table></div>
+            <div class="header"><h1>Accounts</h1><div class="header-controls"><button class="primary-btn" id="btnBulk"><i class="fa-solid fa-list-ul"></i> Bulk Add</button><button class="primary-btn" id="btnAdd"><i class="fa-solid fa-plus"></i> Add Account</button></div></div>
+            <div id="accountsContainer"></div>
         </div>
-        <div id="view-users" style="display: none;"><div class="header"><h1>Users</h1><button class="primary-btn" onclick="document.getElementById('addUserModal').style.display='flex'"><i class="fa-solid fa-user-plus"></i> Add User</button></div><div class="panel"><table><thead><tr><th>Username</th><th>Role</th><th>Action</th></tr></thead><tbody id="usersTableBody"></tbody></table></div></div>
+        <div id="view-bundles" style="display: none;"><div class="header"><h1>Game Bundles</h1><button class="primary-btn" onclick="openBundleModal()"><i class="fa-solid fa-plus"></i> Create Bundle</button></div><div id="bundlesContainer" class="panel" style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;"></div></div>
+        <div id="view-users" style="display: none;"><div class="header"><h1>Users</h1><button class="primary-btn" onclick="openUserModal()"><i class="fa-solid fa-user-plus"></i> Add User</button></div><div class="panel"><table><thead><tr><th>Username</th><th>Role</th><th>Action</th></tr></thead><tbody id="usersTableBody"></tbody></table></div></div>
         <div id="view-logs" style="display: none;"><div class="header"><h1>System Logs</h1><button class="primary-btn" onclick="fetchLogs()"><i class="fa-solid fa-sync-alt"></i> Refresh</button></div><div class="log-container" id="logsContainer"></div></div>
         <div id="view-settings" style="display: none;"><div class="header"><h1>Settings</h1></div><div class="settings-grid"><div class="settings-card"><h3><i class="fa-solid fa-lock"></i> Security</h3><div class="form-group"><label>Current Password</label><input type="password" class="form-input" id="setOldPass"></div><div class="form-group"><label>New Password</label><input type="password" class="form-input" id="setNewPass"></div><button class="primary-btn" onclick="changePassword()" style="margin-top:10px;">Update Password</button></div><div class="settings-card"><h3><i class="fa-solid fa-shield-halved"></i> Two-Factor Authentication</h3><div id="2fa-content-area"></div></div></div></div>
     </div>
     <div id="addModal" class="modal-overlay"><div class="modal"><h3>Add Account</h3><div class="form-group"><label>Username</label><input type="text" class="form-input" id="newUsername" autocomplete="off"></div><div class="form-group"><label>Password</label><input type="password" class="form-input" id="newPassword" autocomplete="new-password"></div><div class="form-group"><label>Shared Secret (Optional)</label><input type="password" class="form-input" id="newSharedSecret"></div><div class="form-group"><label>Category</label><input type="text" class="form-input" id="newCategory" placeholder="Default"></div><div class="check-row"><input type="checkbox" id="newAutoStart"><label for="newAutoStart">Auto-start on Server Boot</label></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="addAccount()">Add</button></div></div></div>
-    <div id="bulkModal" class="modal-overlay"><div class="modal"><h3>Bulk Import</h3><p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">Format: <code>username:password</code> or <code>username:password:secret</code> (one per line)</p><textarea id="bulkData" placeholder="user1:pass1&#10;user2:pass2:secret"></textarea><div class="form-group" style="margin-top:15px;"><label>Assign Category</label><input type="text" class="form-input" id="bulkCategory" placeholder="Default"></div><div class="check-row"><input type="checkbox" id="bulkAutoStart"><label for="bulkAutoStart">Auto-start imported accounts</label></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="bulkAddAccounts()">Import</button></div></div></div>
+    <div id="bulkModal" class="modal-overlay"><div class="modal"><h3>Bulk Import</h3><p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">Format: <code>username:password</code> or <code>username:password:secret</code> (one per line)</p><textarea id="bulkData" placeholder="user1:pass1&#10;user2:pass2:secret"></textarea><div class="form-group" style="margin-top:15px;"><label>Assign Category</label><input type="text" class="form-input" id="bulkCategory" placeholder="Default"></div><div class="form-group"><label>Assign Game Bundle</label><select id="bulkBundle" class="form-select"><option value="">Default (CS2)</option></select></div><div class="check-row"><input type="checkbox" id="bulkAutoStart"><label for="bulkAutoStart">Auto-start imported accounts</label></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="bulkAddAccounts()">Import</button></div></div></div>
     <div id="editModal" class="modal-overlay"><div class="modal"><h3>Edit Account</h3><input type="hidden" id="editOldUsername"><div class="form-group"><label>Username</label><input type="text" class="form-input" id="editUsername"></div><div class="form-group"><label>Password</label><input type="password" class="form-input" id="editPassword"></div><div class="form-group"><label>Shared Secret</label><input type="password" class="form-input" id="editSharedSecret"></div><div class="form-group"><label>Category</label><input type="text" class="form-input" id="editCategory"></div><div class="check-row"><input type="checkbox" id="editAutoStart"><label for="editAutoStart">Auto-start on Server Boot</label></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="saveEdit()">Save</button></div></div></div>
-    <div id="gamesModal" class="modal-overlay"><div class="modal" style="width: 500px;"><h3>Manage Games</h3><div class="game-tags" id="selectedGamesBox"></div><div style="position:relative;margin-bottom:15px;"><input type="text" class="form-input" id="gameSearch" placeholder="Search games..."><div class="search-results" id="searchResults"></div></div><div style="display:flex;gap:10px;"><div class="form-group" style="flex:1;"><label>Online Status</label><select id="personaState" class="form-select"><option value="1">Online</option><option value="0">Offline</option><option value="3">Away</option><option value="4">Snooze</option><option value="5">Trading</option><option value="6">Playing</option></select></div><div class="form-group" style="flex:2;"><label>Custom Status Text</label><input type="text" class="form-input" id="customStatus"></div></div><div class="library-section"><div class="library-title">My Library (Click to add)</div><div class="library-list" id="myLibraryList"><p style="color:#666;font-size:12px;text-align:center;">Loading owned games...</p></div></div><input type="hidden" id="manageGameUsername"><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="saveGames()">Save</button></div></div></div>
+    <div id="gamesModal" class="modal-overlay"><div class="modal" style="width: 500px;"><h3>Manage Games</h3><div class="bundle-controls"><select id="bundleSelect" class="form-select" style="flex:1;"><option value="">Select Bundle...</option></select><button class="primary-btn" onclick="loadBundle()" title="Load Bundle" style="margin-left:8px;">Load</button></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;"><span style="font-size:12px;color:var(--text-muted);">Selected Games</span><span id="gameCounter" style="font-size:12px;color:var(--text-muted);">0/32</span></div><div class="game-tags" id="selectedGamesBox"></div><div style="position:relative;margin-bottom:15px;"><input type="text" class="form-input" id="gameSearch" placeholder="Search games..."><div class="search-results" id="searchResults"></div></div><div style="display:flex;gap:10px;"><div class="form-group" style="flex:1;"><label>Online Status</label><select id="personaState" class="form-select"><option value="1">Online</option><option value="0">Offline</option><option value="3">Away</option><option value="4">Snooze</option><option value="5">Trading</option><option value="6">Playing</option></select></div><div class="form-group" style="flex:2;"><label>Custom Status Text</label><input type="text" class="form-input" id="customStatus"></div></div><div class="library-section"><div class="library-title">My Library (Click to add)</div><div class="library-list" id="myLibraryList"><p style="color:#666;font-size:12px;text-align:center;">Loading owned games...</p></div></div><input type="hidden" id="manageGameUsername"><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="saveGames()">Save</button></div></div></div>
+    <div id="bundleModal" class="modal-overlay"><div class="modal" style="width: 500px;"><h3>Edit Bundle</h3><div class="form-group"><label>Bundle Name</label><input type="text" class="form-input" id="bundleName"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;"><span style="font-size:12px;color:var(--text-muted);">Selected Games</span><span id="bundleGameCounter" style="font-size:12px;color:var(--text-muted);">0/32</span></div><div class="game-tags" id="selectedBundleGamesBox"></div><div style="position:relative;margin-bottom:15px;"><input type="text" class="form-input" id="bundleGameSearch" placeholder="Search games..."><div class="search-results" id="bundleSearchResults"></div></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="saveBundleFromTab()">Save Bundle</button></div></div></div>
     <div id="guardModal" class="modal-overlay"><div class="modal"><h3>Steam Guard</h3><input type="hidden" id="guardUsername"><div class="form-group"><label>Code</label><input type="text" class="form-input" id="guardCode" style="text-align:center;font-size:20px;letter-spacing:5px;"></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="submitGuard()">Submit</button></div></div></div>
     <div id="addUserModal" class="modal-overlay"><div class="modal"><h3>Add User</h3><div class="form-group"><label>Username</label><input type="text" class="form-input" id="friendUser"></div><div class="form-group"><label>Password</label><input type="text" class="form-input" id="friendPass"></div><div class="modal-footer"><button class="btn-sec" onclick="closeModals()">Cancel</button><button class="primary-btn" onclick="addPanelUser()">Create</button></div></div></div>
     <div id="modal2FA" class="modal-overlay"><div class="modal" style="text-align:center;"><h3>Setup 2FA</h3><div id="qrCodeContainer" style="background:#fff;padding:10px;display:inline-block;border-radius:8px;"></div><p style="font-size:12px;color:#666;margin:15px 0;">Scan with Authenticator App</p><input type="text" id="verify2faInput" class="form-input" placeholder="Enter Code" style="text-align:center;"><button class="primary-btn" onclick="enable2FA()" style="width:100%;margin-top:10px;">Enable</button><button class="btn-sec" onclick="document.getElementById('modal2FA').style.display='none'" style="width:100%;margin-top:10px;">Cancel</button></div></div>
     <div id="statsModal" class="modal-overlay"><div class="modal"><h3>Boost Statistics</h3><div class="stat-box"><div class="stat-label">Added To Library</div><div class="stat-value"><span id="statAdded"></span></div></div><div class="stat-box"><div class="stat-label">Total Boosted Time</div><div class="stat-value" style="color:var(--status-green);"><span id="statBoosted"></span> Hours</div></div><p style="font-size:12px;color:#666;margin-top:10px;">*Calculation: 1 real hour x N games running.</p><div class="modal-footer"><button class="primary-btn" onclick="document.getElementById('statsModal').style.display='none'">Close</button></div></div></div>
+    </template>
 
-    <script>
-        let authToken = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
-        let currentUserRole = localStorage.getItem('userRole') || sessionStorage.getItem('userRole');
-        let userHas2FA = false; 
-        let currentSelectedGames = []; let ownedGames = [];
-        let tempSecret = ''; let activeTab = 'dash';
-
-        (async function init() {
-            if (authToken) {
-                const res = await fetch('/api/verify_session', { headers: { 'Authorization': authToken } });
-                const d = await res.json();
-                if (d.success) { document.getElementById('loginOverlay').style.display = 'none'; currentUserRole = d.role; userHas2FA = d.has2FA; setupUI(); fetchAccounts(); }
-                else { localStorage.removeItem('authToken'); sessionStorage.removeItem('authToken'); document.getElementById('loginOverlay').style.display = 'flex'; }
-            } else {
-                const savedUser = localStorage.getItem('rememberedUser');
-                if (savedUser) { document.getElementById('panelUser').value = savedUser; document.getElementById('rememberMe').checked = true; }
-            }
-        })();
-
-        function showToast(msg, icon='fa-circle-info') { const c = document.getElementById('toast-container'); const t = document.createElement('div'); t.className='toast'; t.innerHTML=`<i class="fa-solid ${icon}"></i><span>${msg}</span>`; c.appendChild(t); setTimeout(()=>{ t.style.animation='slideOut 0.3s ease-in forwards'; setTimeout(()=>t.remove(),300); },3000); }
-        async function apiCall(endpoint, method='GET', body=null) {
-            const headers = { 'Content-Type': 'application/json' }; if(authToken) headers['Authorization'] = authToken;
-            const res = await fetch(endpoint, { method, headers, body: body ? JSON.stringify(body) : null });
-            if (res.status === 401) { document.getElementById('loginOverlay').style.display='flex'; localStorage.removeItem('authToken'); sessionStorage.removeItem('authToken'); return null; }
-            return res.json();
-        }
-
-        async function performLogin(is2FA = false) {
-            const u = document.getElementById('panelUser').value; const p = document.getElementById('panelPass').value; const t = document.getElementById('panel2FA').value; const remember = document.getElementById('rememberMe').checked;
-            const res = await fetch('/api/login', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ username:u, password:p, token: is2FA ? t : null }) });
-            const d = await res.json();
-            if (d.requires2fa) { document.getElementById('loginStep1').classList.add('hidden'); document.getElementById('loginStep2').classList.remove('hidden'); document.getElementById('loginError').style.display='none'; document.getElementById('panel2FA').value = ''; }
-            else if (d.success) {
-                authToken = d.token; currentUserRole = d.role; userHas2FA = d.has2FA;
-                if(remember) { localStorage.setItem('authToken', authToken); localStorage.setItem('userRole', d.role); localStorage.setItem('rememberedUser', u); }
-                else { sessionStorage.setItem('authToken', authToken); sessionStorage.setItem('userRole', d.role); localStorage.removeItem('rememberedUser'); }
-                document.getElementById('loginOverlay').style.display='none'; showToast(`Welcome back, ${u}!`, 'fa-door-open'); setupUI(); fetchAccounts();
-            } else { document.getElementById('loginError').style.display='block'; document.getElementById('loginError').innerText=d.msg||"Invalid credentials"; }
-        }
-
-        function switchTab(tab) {
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active')); document.getElementById(`nav-${tab}`).classList.add('active');
-            ['dash','users','logs','settings'].forEach(v => document.getElementById(`view-${v}`).style.display='none');
-            document.getElementById(`view-${tab}`).style.display='block';
-            if(tab==='dash') fetchAccounts(); if(tab==='users') fetchUsers(); if(tab==='logs') fetchLogs(); if(tab==='settings') renderSettings();
-        }
-        function setupUI() { document.getElementById('nav-users').style.display = currentUserRole === 'admin' ? 'flex' : 'none'; }
-        async function logout() { await apiCall('/api/logout', 'POST'); localStorage.removeItem('authToken'); localStorage.removeItem('userRole'); sessionStorage.removeItem('authToken'); sessionStorage.removeItem('userRole'); location.reload(); }
-        async function handleAction(action, username) { showToast(`${action} ${username}...`, 'fa-gear'); await apiCall(`/api/${action}`, 'POST', { username }); fetchAccounts(); }
-
-        // RENDER SETTINGS based on 2FA status
-        function renderSettings() {
-            const area = document.getElementById('2fa-content-area');
-            if (userHas2FA) {
-                area.innerHTML = `
-                    <div class="status-active-2fa"><i class="fa-solid fa-check-circle"></i> 2FA is Active. Account Secured.</div>
-                    <button class="primary-btn btn-stop-action" onclick="disable2FA()"><i class="fa-solid fa-ban"></i> Disable 2FA</button>
-                `;
-            } else {
-                area.innerHTML = `
-                    <p class="status-inactive-2fa">Protect your admin panel with Google Authenticator.</p>
-                    <button class="primary-btn" onclick="start2FASetup()"><i class="fa-solid fa-shield-halved"></i> Setup 2FA</button>
-                `;
-            }
-        }
-
-        async function disable2FA() {
-            if(confirm("Disable 2FA?")) {
-                const res = await apiCall('/api/settings/2fa/disable', 'POST');
-                if(res && res.success) { userHas2FA = false; renderSettings(); showToast('2FA Disabled', 'fa-shield-halved'); }
-            }
-        }
-
-        function renderTable(accounts) {
-            const filter = document.getElementById('categoryFilter').value;
-            const filtered = filter === 'All' ? accounts : accounts.filter(a => a.category === filter);
-            const dropdown = document.getElementById('categoryFilter');
-            const currentOpts = Array.from(dropdown.options).map(o => o.value);
-            [...new Set(accounts.map(a => a.category || 'Default'))].forEach(c => { if(!currentOpts.includes(c)) { const o = document.createElement('option'); o.value=c; o.innerText=c; dropdown.appendChild(o); } });
-
-            document.getElementById('totalAccounts').innerText = accounts.length;
-            document.getElementById('activeBoosters').innerText = accounts.filter(a => a.status==='Running').length;
-            document.getElementById('totalHours').innerText = accounts.reduce((a,c) => a + parseFloat(c.grandTotal||0), 0).toFixed(1) + 'h';
-
-            const tbody = document.getElementById('accountTableBody'); tbody.innerHTML = '';
-            filtered.forEach(acc => {
-                const isRunning = acc.status === 'Running';
-                let stHtml = `<span class="st-stopped">${acc.status}</span>`;
-                if(isRunning) stHtml = `<span class="st-running">Running</span>`;
-                if(acc.status==='Need Guard') stHtml = `<span class="st-guard">Guard</span>`;
-                if(acc.status==='Logging in...') stHtml = `<span class="st-logging">Logging in...</span>`;
-                
-                // ADD TOOLTIP TO ERROR STATUS
-                if (acc.status === 'Error' && acc.lastError) {
-                    stHtml = `<span class="st-stopped" style="cursor:help; border-bottom:1px dotted var(--btn-red);" title="${acc.lastError}">ERROR</span>`;
-                }
-
-                const avatarUrl = acc.avatarHash ? `https://avatars.steamstatic.com/${acc.avatarHash}_full.jpg` : 'https://avatars.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg';
-                const categoryBadge = acc.category && acc.category !== 'Default' ? `<span class="category-badge">${acc.category}</span>` : '';
-                const autoStartIcon = acc.autoStart ? `<i class="fa-solid fa-bolt autostart-icon" title="Auto-start Enabled"></i>` : '';
-                const gamesJson = JSON.stringify(acc.games).replace(/"/g, '&quot;');
-                const profileBtn = acc.steamId ? `<a href="https://steamcommunity.com/profiles/${acc.steamId}" target="_blank" class="icon-btn"><i class="fa-solid fa-up-right-from-square"></i></a>` : '';
-
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${categoryBadge}${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${stHtml}</td><td style="color:white;font-weight:600;">${acc.grandTotal}h</td><td><div class="actions">${isRunning?`<button class="icon-btn btn-stop-action" onclick="handleAction('stop','${acc.username}')"><i class="fa-solid fa-stop"></i></button><button class="icon-btn" onclick="handleAction('restart','${acc.username}')"><i class="fa-solid fa-rotate-right"></i></button>`:`<button class="icon-btn btn-play" onclick="handleAction('start','${acc.username}')"><i class="fa-solid fa-play"></i></button>`}<button class="icon-btn" style="width:auto;padding:0 12px;gap:6px;" onclick="openGamesModal('${acc.username}', ${gamesJson}, '${acc.customStatus||''}', ${acc.personaState})"><i class="fa-solid fa-gamepad"></i> <span style="font-size:11px;font-weight:600;">${acc.games.length}/32</span></button><button class="icon-btn" onclick="openStats('${acc.addedAt}', ${acc.boostedHours})"><i class="fa-solid fa-chart-line"></i></button>${profileBtn}<button class="icon-btn" onclick="openEditModal('${acc.username}', '${acc.category||''}', ${acc.autoStart})"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteAccount('${acc.username}')"><i class="fa-solid fa-trash"></i></button>${acc.status==='Need Guard'?`<button class="icon-btn" style="color:var(--status-yellow);border-color:var(--status-yellow);" onclick="openGuard('${acc.username}')"><i class="fa-solid fa-key"></i></button>`:''}</div></td>`;
-                tbody.appendChild(tr);
-            });
-        }
-
-        async function fetchAccounts() { const d = await apiCall('/api/accounts'); if(d) renderTable(d); }
-        async function fetchLogs() { const l = await apiCall('/api/logs'); document.getElementById('logsContainer').innerHTML = l.map(m=>`<div class="log-line">${m}</div>`).join(''); }
-        async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:white;">${x.username}</td><td style="color:#888;">${x.role}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser('${x.username}')"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
-
-        function closeModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none'); }
-        function openAddModal() { document.getElementById('newUsername').value=''; document.getElementById('newPassword').value=''; document.getElementById('newCategory').value=''; document.getElementById('newAutoStart').checked=false; document.getElementById('addModal').style.display='flex'; }
-        function openBulkModal() { document.getElementById('bulkData').value=''; document.getElementById('bulkCategory').value=''; document.getElementById('bulkAutoStart').checked=false; document.getElementById('bulkModal').style.display='flex'; }
-        function openUserModal() { document.getElementById('friendUser').value=''; document.getElementById('friendPass').value=''; document.getElementById('addUserModal').style.display='flex'; }
-        function openGuard(u) { document.getElementById('guardUsername').value = u; document.getElementById('guardModal').style.display = 'flex'; }
-        function openStats(date, hours) { document.getElementById('statAdded').innerText = new Date(parseInt(date)).toLocaleDateString(); document.getElementById('statBoosted').innerText = parseFloat(hours).toFixed(1); document.getElementById('statsModal').style.display = 'flex'; }
-
-        async function openEditModal(u, cat, auto) { const d = await apiCall('/api/get_account', 'POST', { username: u }); document.getElementById('editOldUsername').value = d.username; document.getElementById('editUsername').value = d.username; document.getElementById('editPassword').value = d.password; document.getElementById('editSharedSecret').value = d.sharedSecret; document.getElementById('editCategory').value = d.category || cat; document.getElementById('editAutoStart').checked = d.autoStart; document.getElementById('editModal').style.display = 'flex'; }
-        async function addAccount() { await apiCall('/api/accounts', 'POST', { username: document.getElementById('newUsername').value, password: document.getElementById('newPassword').value, sharedSecret: document.getElementById('newSharedSecret').value, category: document.getElementById('newCategory').value, autoStart: document.getElementById('newAutoStart').checked }); closeModals(); fetchAccounts(); }
-        async function bulkAddAccounts() { const data = document.getElementById('bulkData').value; const cat = document.getElementById('bulkCategory').value; const auto = document.getElementById('bulkAutoStart').checked; const res = await apiCall('/api/accounts/bulk', 'POST', { data, category: cat, autoStart: auto }); if(res && res.success) { showToast(`Imported ${res.count} accounts`, 'fa-check'); closeModals(); fetchAccounts(); } }
-        async function saveEdit() { await apiCall('/api/edit', 'POST', { oldUsername: document.getElementById('editOldUsername').value, newUsername: document.getElementById('editUsername').value, newPassword: document.getElementById('editPassword').value, newSharedSecret: document.getElementById('editSharedSecret').value, newCategory: document.getElementById('editCategory').value, newAutoStart: document.getElementById('editAutoStart').checked }); closeModals(); fetchAccounts(); }
-        async function deleteAccount(u) { if(confirm('Delete Account?')) await apiCall('/api/delete', 'POST', { username: u }); fetchAccounts(); }
-        async function submitGuard() { await apiCall('/api/steamguard', 'POST', { username: document.getElementById('guardUsername').value, code: document.getElementById('guardCode').value }); closeModals(); fetchAccounts(); }
-        async function addPanelUser() { await apiCall('/api/users', 'POST', { username: document.getElementById('friendUser').value, password: document.getElementById('friendPass').value }); closeModals(); fetchUsers(); }
-        async function delUser(u) { if(confirm('Delete User?')) await apiCall('/api/users/delete', 'POST', { username: u }); fetchUsers(); }
-
-        async function changePassword() { const d = await apiCall('/api/settings/password', 'POST', { currentPass: document.getElementById('setOldPass').value, newPass: document.getElementById('setNewPass').value }); alert(d&&d.success?"Updated":"Error"); }
-        async function start2FASetup() { const d = await apiCall('/api/settings/2fa/generate', 'POST'); tempSecret = d.secret; document.getElementById('qrCodeContainer').innerHTML = `<img src="${d.qr}" width="150">`; document.getElementById('modal2FA').style.display = 'flex'; }
-        async function enable2FA() { const d = await apiCall('/api/settings/2fa/enable', 'POST', { token: document.getElementById('verify2faInput').value, secret: tempSecret }); if(d&&d.success) { userHas2FA = true; renderSettings(); document.getElementById('modal2FA').style.display = 'none'; showToast('2FA Enabled', 'fa-check'); } else alert("Invalid Code"); }
-
-        // --- NEW: FETCH LIBRARY ---
-        async function fetchLibrary(u) {
-            const list = document.getElementById('myLibraryList');
-            list.innerHTML = '<p style="color:#666;font-size:12px;text-align:center;">Loading owned games...</p>';
-            const res = await apiCall('/api/library', 'POST', { username: u });
-            list.innerHTML = '';
-            ownedGames = res.games || [];
-            
-            if(ownedGames.length === 0) {
-                list.innerHTML = '<p style="color:#666;font-size:12px;text-align:center;">No games found (Start bot first)</p>';
-                return;
-            }
-            
-            ownedGames.forEach(g => {
-                const item = document.createElement('div');
-                item.className = 'library-item';
-                item.innerText = g.name;
-                item.onclick = () => addGame(g.id, g.name);
-                list.appendChild(item);
-            });
-        }
-
-        function openGamesModal(u, g, c, s) { 
-            document.getElementById('manageGameUsername').value = u; 
-            currentSelectedGames = g; 
-            document.getElementById('customStatus').value = c; 
-            document.getElementById('personaState').value = s || 1; 
-            renderTags(); 
-            document.getElementById('gamesModal').style.display='flex'; 
-            document.getElementById('gameSearch').value=''; 
-            document.getElementById('searchResults').style.display='none'; 
-            
-            // FETCH LIBRARY ON OPEN
-            fetchLibrary(u);
-        }
-        
-        function renderTags() { const b = document.getElementById('selectedGamesBox'); b.innerHTML = ''; currentSelectedGames.forEach(g => b.innerHTML += `<div class="tag"><span>${g.name}</span><span class="tag-id">${g.id}</span><span class="tag-x" onclick="removeGame(${g.id})">&times;</span></div>`); }
-        function removeGame(id) { currentSelectedGames = currentSelectedGames.filter(g=>g.id!==id); renderTags(); }
-        function addGame(id, name) { if(currentSelectedGames.length>=32) return alert('Max 32'); if(!currentSelectedGames.find(g=>g.id===id)) currentSelectedGames.push({id,name}); renderTags(); document.getElementById('gameSearch').value=''; document.getElementById('searchResults').style.display='none'; }
-        
-        const si = document.getElementById('gameSearch'); let st;
-        // UPDATED SEARCH LOGIC: Filter GLOBAL games AND LOCAL library
-        si.addEventListener('input', () => { 
-            clearTimeout(st); 
-            const q = si.value.trim().toLowerCase(); 
-            if(q.length<2) { document.getElementById('searchResults').style.display='none'; return; } 
-            
-            st = setTimeout(async()=>{ 
-                // 1. Search Global DB
-                const res = await apiCall(`/api/search_games?q=${encodeURIComponent(q)}`); 
-                const rb = document.getElementById('searchResults'); 
-                rb.innerHTML=''; 
-                
-                // 2. Filter Owned Library (Client-side)
-                const libraryMatches = ownedGames.filter(g => g.name.toLowerCase().includes(q));
-                
-                // Header for Library matches
-                if (libraryMatches.length > 0) {
-                    rb.innerHTML += `<div style="padding:5px 10px;font-size:10px;color:#666;text-transform:uppercase;font-weight:bold;">From Library</div>`;
-                    libraryMatches.forEach(g => {
-                        rb.innerHTML += `<div class="search-item" onclick="addGame(${g.id}, '${g.name.replace(/'/g, "\\'")}')"><span style="color:var(--status-green)">${g.name}</span> <span style="color:#666;">${g.id}</span></div>`;
-                    });
-                }
-
-                // Header for Global matches
-                if (res.length > 0) {
-                    rb.innerHTML += `<div style="padding:5px 10px;font-size:10px;color:#666;text-transform:uppercase;font-weight:bold;border-top:1px solid #333;margin-top:5px;">Global Steam DB</div>`;
-                    res.forEach(g => { 
-                        // Avoid duplicates if already shown in library section
-                        if (!libraryMatches.find(l => l.id === g.appid)) {
-                            rb.innerHTML += `<div class="search-item" onclick="addGame(${g.appid}, '${g.name.replace(/'/g, "\\'")}')"><span>${g.name}</span><span style="color:#666;">${g.appid}</span></div>`; 
-                        }
-                    }); 
-                }
-                
-                if(rb.innerHTML === '') rb.innerHTML = '<div style="padding:10px;color:#666;text-align:center;font-size:12px;">No results</div>';
-                rb.style.display='block'; 
-            }, 300); 
-        });
-        
-        async function saveGames() { await apiCall('/api/games', 'POST', { username: document.getElementById('manageGameUsername').value, games: currentSelectedGames.map(g=>g.id), customStatus: document.getElementById('customStatus').value, personaState: document.getElementById('personaState').value }); closeModals(); fetchAccounts(); }
-
-        setInterval(() => { if(authToken && activeTab === 'dash') fetchAccounts(); }, 3000);
-        document.getElementById('panelPass').addEventListener("keypress", (e) => { if (e.key === "Enter") performLogin(); });
-    </script>
+    <script src="/login.js"></script>
 </body>
 </html>
