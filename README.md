@@ -41,9 +41,15 @@ Your data security is the top priority of this project.
 
 * **Secure Dashboard:** Web interface protected by Login + Google Authenticator (2FA).
 * **Account Management:** Add, Edit, and Delete Steam accounts easily.
-* **Bulk Import:** Add multiple accounts at once using `user:pass:secret` format.
+* **Bulk Import & Edit:** Add multiple accounts at once and mass-edit settings like proxies, avatars, or privacy.
+* **Proxy Manager:** Assign individual proxies to accounts to prevent IP bans, with a built-in proxy checker.
+* **Game Bundles & Rotation:** Create game presets and idle more than 32 games by automatically rotating them every hour.
+* **Profile Editor:** Change your Avatar, Nickname, Real Name, Custom URL, and Privacy Settings directly from the dashboard.
+* **Discord Notifications:** Get notified via Webhook when an account needs a Steam Guard code, hits a rate limit, or disconnects.
+* **Auto-Accept Friends:** Optional setting to automatically accept incoming friend requests.
 * **My Library Selector:** Automatically fetches your owned games for easy selection—no need to look up App IDs manually.
 * **Auto-Start:** Configurable option to automatically start specific accounts when the server boots.
+* **Panic Button:** Emergency switch to stop all bots immediately.
 * **Smart Logging:** Detailed error reporting (e.g., Incorrect Password, Steam Guard required) saved directly to the dashboard with tooltip hints.
 * **Visual Status:** Clear indicators for running bots, 2FA status, and error messages.
 * **Category System:** Organize accounts into "Main", "Smurfs", "Storage", etc.
@@ -118,10 +124,12 @@ This tool is for educational purposes. Using hour boosters may violate Steam's T
 Here are the features planned for future updates of BruddiBooster.
 
 ### 🚀 Upcoming Features
-- [ ] **Proxy Support:** Ability to assign individual HTTP/SOCKS5 proxies to accounts to prevent IP bans.
+- [x] **Proxy Support:** Ability to assign individual HTTP/SOCKS5 proxies to accounts to prevent IP bans.
+- [x] **Auto-Accept Friends:** Configurable rules to auto-accept friend requests.
+- [x] **Discord Webhooks:** Send notifications to Discord when an account goes offline or needs a Guard code.
+- [x] **Profile Editor:** Edit profile details and privacy settings.
+- [x] **Game Rotation:** Idle more than 32 games.
 - [ ] **Steam Chat:** View and reply to Steam friends directly from the dashboard.
-- [ ] **Auto-Accept Friends:** Configurable rules to auto-accept friend requests.
-- [ ] **Discord Webhooks:** Send notifications to Discord when an account goes offline or needs a Guard code.
 - [ ] **Docker Support:** Create a `Dockerfile` for easy one-click deployment.
 
 ### 🎨 UI/UX Improvements
