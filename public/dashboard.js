@@ -6,6 +6,9 @@ const categoryStates = {};
 let tempSecret = ''; 
 let activeTab = 'dash';
 let availableBundles = {};
+let cachedAccounts = [];
+let cachedBundles = {};
+let cachedLogs = [];
 
 // Initialize Dashboard
 window.onDashboardLoaded = function() {
@@ -13,6 +16,11 @@ window.onDashboardLoaded = function() {
     initBundleGameSearch();
     document.getElementById('btnBulk').addEventListener('click', openBulkModal);
     document.getElementById('btnAdd').addEventListener('click', openAddModal);
+
+    // Search Listeners
+    document.getElementById('accountSearch').addEventListener('input', () => applyAccountFilter());
+    document.getElementById('bundleSearch').addEventListener('input', () => renderBundlesView());
+    document.getElementById('logSearch').addEventListener('input', () => renderLogs());
     
     // Setup UI based on role
     document.getElementById('nav-users').style.display = currentUserRole === 'admin' ? 'flex' : 'none';
@@ -129,8 +137,14 @@ function createAccountRow(acc) {
         return tr;
 }
 
-async function fetchAccounts() { const d = await apiCall('/api/accounts'); if(d) renderTable(d); }
-async function fetchLogs() { const l = await apiCall('/api/logs'); document.getElementById('logsContainer').innerHTML = l.map(m=>`<div class="log-line">${m}</div>`).join(''); }
+function applyAccountFilter() {
+    const q = document.getElementById('accountSearch').value.toLowerCase();
+    const filtered = cachedAccounts.filter(a => a.username.toLowerCase().includes(q));
+    renderTable(filtered);
+}
+
+async function fetchAccounts() { const d = await apiCall('/api/accounts'); if(d) { cachedAccounts = d; applyAccountFilter(); } }
+async function fetchLogs() { cachedLogs = await apiCall('/api/logs'); renderLogs(); }
 async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:white;">${x.username}</td><td style="color:#888;">${x.role}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser('${x.username}')"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
 
 function closeModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none'); }
@@ -251,13 +265,19 @@ function loadBundle() {
 
 // --- NEW BUNDLE TAB LOGIC ---
 async function fetchBundlesView() {
-    const b = await apiCall('/api/bundles');
+    cachedBundles = await apiCall('/api/bundles');
+    renderBundlesView();
+}
+
+function renderBundlesView() {
+    const q = document.getElementById('bundleSearch').value.toLowerCase();
     const c = document.getElementById('bundlesContainer');
     c.innerHTML = '';
-    for (const k in b) {
+    for (const k in cachedBundles) {
+        if (q && !k.toLowerCase().includes(q)) continue;
         const card = document.createElement('div');
         card.className = 'bundle-card';
-        card.innerHTML = `<h4>${k}</h4><span>${b[k].length} Games</span><div class="bundle-actions"><button class="icon-btn" onclick="openBundleModal('${k}')"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteBundleFromTab('${k}')"><i class="fa-solid fa-trash"></i></button></div>`;
+        card.innerHTML = `<h4>${k}</h4><span>${cachedBundles[k].length} Games</span><div class="bundle-actions"><button class="icon-btn" onclick="openBundleModal('${k}')"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteBundleFromTab('${k}')"><i class="fa-solid fa-trash"></i></button></div>`;
         c.appendChild(card);
     }
 }
@@ -307,4 +327,10 @@ function initBundleGameSearch() {
             rb.style.display='block'; 
         }, 300); 
     });
+}
+
+function renderLogs() {
+    const q = document.getElementById('logSearch').value.toLowerCase();
+    const filtered = cachedLogs.filter(l => l.toLowerCase().includes(q));
+    document.getElementById('logsContainer').innerHTML = filtered.map(m=>`<div class="log-line">${m}</div>`).join('');
 }
