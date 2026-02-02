@@ -6,6 +6,7 @@ const ACCOUNTS_DIR = path.join(__dirname, 'accounts');
 const USERS_FILE = path.join(__dirname, 'users.json');
 const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
 const BUNDLES_FILE = path.join(__dirname, 'bundles.json');
+const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 
 if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR);
 
@@ -67,4 +68,11 @@ if (fs.existsSync(BUNDLES_FILE)) { try { bundles = JSON.parse(fs.readFileSync(BU
 function getBundles() { return bundles; }
 function saveBundles(b) { bundles = b; fs.writeFileSync(BUNDLES_FILE, JSON.stringify(bundles, null, 2)); }
 
-module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles };
+// --- SETTINGS ---
+let globalSettings = { discordWebhook: "" };
+if (fs.existsSync(SETTINGS_FILE)) { try { globalSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE)); } catch(e){} }
+
+function getSettings() { return globalSettings; }
+function saveSettings(s) { globalSettings = s; fs.writeFileSync(SETTINGS_FILE, JSON.stringify(globalSettings, null, 2)); }
+
+module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings };

@@ -13,6 +13,7 @@
     "helmet": "^8.1.0",
     "qrcode": "^1.5.3",
     "speakeasy": "^2.0.0",
+    "steamcommunity": "^3.44.0",
     "steam-totp": "^2.1.2",
     "steam-user": "^4.28.0"
   }
