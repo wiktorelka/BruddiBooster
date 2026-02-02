@@ -326,4 +326,25 @@ setInterval(() => {
     });
 }, 3600000);
 
-module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames };
+function requestFreeGames(username, gameIds) {
+    const bot = activeBots[username];
+    if (!bot || !bot.client || bot.status !== 'Running') {
+        log(`${username} cannot add free games: Bot not running.`, "WARN", username);
+        return;
+    }
+    
+    bot.client.requestFreeLicense(gameIds, (err, grantedPackages, grantedAppIDs) => {
+        if (err) {
+            log(`${username} failed to add free games: ${err.message}`, "ERROR", username);
+        } else {
+            if (grantedAppIDs && grantedAppIDs.length > 0) {
+                log(`${username} added ${grantedAppIDs.length} free games to library.`, "SUCCESS", username);
+                updateHours(username, bot.client); // Refresh owned games list
+            } else {
+                log(`${username} requested free games, but none were granted (already owned?).`, "INFO", username);
+            }
+        }
+    });
+}
+
+module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames };

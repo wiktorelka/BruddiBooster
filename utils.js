@@ -5,14 +5,17 @@ const path = require('path');
 const KEY_FILE = path.join(__dirname, 'secret.key');
 const MAX_LOGS = 100;
 const systemLogs = [];
+let logListener = null;
 
 // --- LOGGING ---
+function setLogListener(fn) { logListener = fn; }
 function log(msg, type='INFO', relatedUser=null) {
     const timestamp = new Date().toLocaleTimeString('en-US',{hour12:false});
     const entry = `[${timestamp}] [${type}] ${msg}`;
     console.log(entry);
     systemLogs.unshift({ text: entry, relatedUser });
     if(systemLogs.length > MAX_LOGS) systemLogs.pop();
+    if (logListener) logListener({ text: entry, relatedUser });
 }
 
 function getLogs() { return systemLogs; }
@@ -47,4 +50,4 @@ function decrypt(text) {
     } catch (e) { return text; }
 }
 
-module.exports = { log, getLogs, encrypt, decrypt };
+module.exports = { log, getLogs, encrypt, decrypt, setLogListener };

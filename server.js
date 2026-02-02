@@ -10,9 +10,12 @@ const http = require('http');
 
 const { log, getLogs, encrypt, decrypt } = require('./utils');
 const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings } = require('./data');
-const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames } = require('./bot');
+const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames } = require('./bot');
 
 const app = express();
+const server = http.createServer(app);
+const { Server } = require("socket.io");
+const io = new Server(server);
 
 let serverPublicIp = "Loading...";
 https.get('https://api.ipify.org', (res) => {
@@ -29,7 +32,7 @@ app.use(helmet({
             scriptSrcAttr: ["'unsafe-inline'"], // Needed for event handlers
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
             fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
-            imgSrc: ["'self'", "data:", "https://avatars.steamstatic.com", "https://raw.githubusercontent.com"],
+            imgSrc: ["'self'", "data:", "https://avatars.steamstatic.com", "https://raw.githubusercontent.com", "https://cdn.cloudflare.steamstatic.com", "https://shared.akamai.steamstatic.com", "https://steamcdn-a.akamaihd.net"],
             connectSrc: ["'self'", "https://raw.githubusercontent.com"], // For fetching game list
             upgradeInsecureRequests: [],
         },
@@ -38,6 +41,10 @@ app.use(helmet({
 }));
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static('public'));
+
+// --- SOCKET.IO ---
+const { setLogListener } = require('./utils');
+setLogListener((logEntry) => { io.emit('new_log', logEntry); });
 
 const loginLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, message: { success: false, msg: "Too many attempts" } });
 
@@ -94,6 +101,17 @@ app.post('/api/accounts/bulk', (req, res) => {
     const bundles = getBundles(); const selectedGames = (bundle && bundles[bundle]) ? bundles[bundle] : [730];
     lines.forEach(l => { const p = l.trim().split(':'); if (p.length >= 2 && !getAccount(p[0].trim())) { saveAccount({ username: p[0].trim(), password: p[1].trim(), sharedSecret: p[2]?p[2].trim():"", proxy: p[3]?p[3].trim():"", category: category||"Default", autoStart: !!autoStart, autoAccept: !!autoAccept, games: selectedGames, nickname: null, owner: req.user.username, grandTotal: "0.0", addedAt: Date.now(), boostedHours: 0, personaState: 1 }); c++; } });
     log(`Bulk added ${c}`, "SYSTEM"); res.json({ success: true, count: c });
+});
+app.get('/api/accounts/export', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
+    const accounts = getAllAccounts();
+    const data = accounts.map(a => {
+        let line = `${a.username}:${a.password}`;
+        if (a.sharedSecret) line += `:${a.sharedSecret}`;
+        if (a.proxy) line += `:${a.proxy}`;
+        return line;
+    }).join('\n');
+    res.json({ success: true, data });
 });
 app.post('/api/accounts/bulk_update', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
@@ -171,6 +189,26 @@ app.post('/api/start', (req, res) => { if (!verifyOwner(req, req.body.username))
 app.post('/api/stop', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); res.json({ success: true }); });
 app.post('/api/restart', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); setTimeout(() => { startBotProcess(getAccount(req.body.username)); }, 1000); res.json({ success: true }); });
 app.post('/api/steamguard', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); const b = getActiveBots()[req.body.username]; if (b && b.guardCallback) { b.guardCallback(req.body.code); b.status = 'Verifying...'; b.guardCallback = null; res.json({ success: true }); } else res.status(400).json({}); });
+app.post('/api/restart_all', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
+    const activeBots = getActiveBots();
+    let count = 0;
+    const botsToRestart = [];
+    Object.keys(activeBots).forEach(u => {
+        if (activeBots[u].status === 'Running' || activeBots[u].status === 'Logging in...' || activeBots[u].status.includes('Rate Limit')) {
+            botsToRestart.push(u);
+            stopBot(u);
+            count++;
+        }
+    });
+    let delay = 2000;
+    botsToRestart.forEach(u => {
+        setTimeout(() => { const acc = getAccount(u); if (acc) startBotProcess(acc); }, delay);
+        delay += 3000;
+    });
+    log(`Restart All triggered. Cycling ${count} bots.`, "SYSTEM", req.user.username);
+    res.json({ success: true, count });
+});
 app.post('/api/panic', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
     const activeBots = getActiveBots();
@@ -193,6 +231,17 @@ app.post('/api/games', (req, res) => {
     const b = getActiveBots()[req.body.username]; 
     if (b && b.client && b.status === 'Running') { updateBotGames(req.body.username); }
     res.json({ success: true }); 
+});
+app.post('/api/games/free_license', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
+    const { usernames, games } = req.body;
+    if (!usernames || !Array.isArray(usernames) || !games || !Array.isArray(games)) return res.status(400).json({ error: 'Invalid data' });
+    
+    let count = 0;
+    usernames.forEach(u => {
+        if (verifyOwner(req, u)) { requestFreeGames(u, games); count++; }
+    });
+    res.json({ success: true, count });
 });
 app.post('/api/delete', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); deleteAccountFile(req.body.username); delete getActiveBots()[req.body.username]; res.json({ success: true }); });
 app.post('/api/get_account', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ username: acc.username, sharedSecret: acc.sharedSecret || '', proxy: acc.proxy || '', category: acc.category || '', autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept }); });
@@ -284,4 +333,4 @@ app.post('/api/proxy/check', (req, res) => {
     }
 });
 
-app.listen(3000, () => log('BruddiBooster v18 Running on 3000', "SYSTEM"));
+server.listen(3000, () => log('BruddiBooster v18 Running on 3000', "SYSTEM"));

@@ -9,6 +9,76 @@ let availableBundles = {};
 let cachedAccounts = [];
 let cachedBundles = {};
 let cachedLogs = [];
+let socket = null;
+let selectedFreeGames = [];
+let selectedFreeAccounts = [];
+
+const POPULAR_FREE_GAMES = [
+    { id: 730, name: "Counter-Strike 2" },
+    { id: 570, name: "Dota 2" },
+    { id: 578080, name: "PUBG: BATTLEGROUNDS" },
+    { id: 1172470, name: "Apex Legends" },
+    { id: 1244630, name: "NARAKA: BLADEPOINT" },
+    { id: 1085660, name: "Destiny 2" },
+    { id: 230410, name: "Warframe" },
+    { id: 236390, name: "War Thunder" },
+    { id: 440, name: "Team Fortress 2" },
+    { id: 304930, name: "Unturned" },
+    { id: 1222670, name: "The Sims™ 4" },
+    { id: 1449850, name: "Yu-Gi-Oh! Master Duel" },
+    { id: 444200, name: "World of Tanks Blitz" },
+    { id: 291550, name: "Brawlhalla" },
+    { id: 238960, name: "Path of Exile" },
+    { id: 386360, name: "SMITE" },
+    { id: 444090, name: "Paladins" },
+    { id: 1599340, name: "Lost Ark" },
+    { id: 1240440, name: "Halo Infinite" },
+    { id: 2357570, name: "Overwatch® 2" },
+    { id: 2073850, name: "THE FINALS" },
+    { id: 761890, name: "Albion Online" },
+    { id: 700330, name: "SCP: Secret Laboratory" },
+    { id: 438100, name: "VRChat" },
+    { id: 552990, name: "World of Warships" },
+    { id: 8500, name: "EVE Online" },
+    { id: 1782210, name: "Crab Game" },
+    { id: 1568590, name: "Goose Goose Duck" },
+    { id: 1623660, name: "MIR4" },
+    { id: 588430, name: "Fallout Shelter" },
+    { id: 304050, name: "Trove" },
+    { id: 218230, name: "PlanetSide 2" },
+    { id: 24200, name: "DC Universe Online" },
+    { id: 9900, name: "Star Trek Online" },
+    { id: 109600, name: "Neverwinter" },
+    { id: 291480, name: "Warface: Clutch" },
+    { id: 386180, name: "Crossout" },
+    { id: 1105500, name: "Asphalt 9: Legends" },
+    { id: 1938090, name: "Call of Duty®" },
+    { id: 1515320, name: "Disney Speedstorm" },
+    { id: 1276390, name: "Bloons TD Battles 2" },
+    { id: 301520, name: "Robocraft" },
+    { id: 1343400, name: "RuneScape" },
+    { id: 1284210, name: "Guild Wars 2" },
+    { id: 918570, name: "Century: Age of Ashes" },
+    { id: 677620, name: "Splitgate" },
+    { id: 2133250, name: "Enlisted" },
+    { id: 1286830, name: "STAR WARS™: The Old Republic™" },
+    { id: 909660, name: "Conqueror's Blade" },
+    { id: 380600, name: "Fishing Planet" },
+    { id: 1407200, name: "World of Tanks" },
+    { id: 767560, name: "War Robots" },
+    { id: 471710, name: "Rec Room" },
+    { id: 489520, name: "Minion Masters" },
+    { id: 212500, name: "The Lord of the Rings Online™" },
+    { id: 813820, name: "Realm Royale Reforged" },
+    { id: 843380, name: "Super Animal Royale" },
+    { id: 784030, name: "CRSED" },
+    { id: 611500, name: "Quake Champions" },
+    { id: 2420510, name: "HoloCure - Save the Fans!" },
+    { id: 714010, name: "Aimlabs" },
+    { id: 363970, name: "Clicker Heroes" },
+    { id: 346900, name: "AdVenture Capitalist" },
+    { id: 627690, name: "Idle Champions" }
+];
 
 // Initialize Dashboard
 window.onDashboardLoaded = function() {
@@ -27,15 +97,36 @@ window.onDashboardLoaded = function() {
     
     // Start polling
     fetchAccounts();
-    setInterval(() => { if(authToken && activeTab === 'dash') fetchAccounts(); }, 3000);
+    setInterval(() => { 
+        if(!authToken) return; 
+        if(activeTab === 'dash' || activeTab === 'freegames') fetchAccounts(); 
+        if(activeTab === 'logs') fetchLogs();
+    }, 3000);
+
+    // Socket.io Live Logs
+    if (typeof io !== 'undefined') {
+        socket = io();
+        socket.on('new_log', (logEntry) => {
+            if (currentUserRole !== 'admin') {
+                if (!logEntry.relatedUser || !cachedAccounts.some(a => a.username === logEntry.relatedUser)) return;
+            }
+            cachedLogs.unshift(logEntry.text);
+            if (cachedLogs.length > 100) cachedLogs.pop();
+            if (activeTab === 'logs') renderLogs();
+        });
+    }
 };
 
 function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active')); document.getElementById(`nav-${tab}`).classList.add('active');
-    ['dash','users','logs','settings','bundles','proxies'].forEach(v => document.getElementById(`view-${v}`).style.display='none');
+    ['dash','users','logs','settings','bundles','proxies','freegames'].forEach(v => document.getElementById(`view-${v}`).style.display='none');
     document.getElementById(`view-${tab}`).style.display='block';
-    if(tab==='dash') fetchAccounts(); if(tab==='users') fetchUsers(); if(tab==='logs') fetchLogs(); if(tab==='settings') renderSettings(); if(tab==='bundles') fetchBundlesView(); if(tab==='proxies') fetchProxiesView();
+    if(tab==='dash') fetchAccounts(); if(tab==='users') fetchUsers(); if(tab==='logs') fetchLogs(); if(tab==='settings') renderSettings(); if(tab==='bundles') fetchBundlesView(); if(tab==='proxies') fetchProxiesView(); if(tab==='freegames') renderFreeGamesView();
+    if (window.innerWidth <= 768) {
+        document.querySelector('.sidebar .menu').classList.remove('mobile-visible');
+        document.querySelector('.sidebar-footer').classList.remove('mobile-visible');
+    }
 }
 
 async function logout() { await apiCall('/api/logout', 'POST'); localStorage.removeItem('authToken'); localStorage.removeItem('userRole'); sessionStorage.removeItem('authToken'); sessionStorage.removeItem('userRole'); location.reload(); }
@@ -45,6 +136,11 @@ async function handleAction(action, username) { showToast(`${action} ${username}
 function renderSettings() {
     const area = document.getElementById('2fa-content-area');
     fetchGlobalSettings();
+    
+    const currentTheme = localStorage.getItem('theme') || 'dark';
+    const toggle = document.getElementById('themeToggle');
+    if(toggle) toggle.checked = currentTheme === 'light';
+
     if (userHas2FA) {
         area.innerHTML = `
             <div class="status-active-2fa"><i class="fa-solid fa-check-circle"></i> 2FA is Active. Account Secured.</div>
@@ -106,8 +202,8 @@ function getStatusHtml(acc) {
     }
     if(acc.status==='Need Guard') return `<span class="st-guard">Guard</span>`;
     if(acc.status==='Logging in...') return `<span class="st-logging">Logging in...</span>`;
-    if(acc.status.includes('Rate Limit')) return `<span class="st-guard" style="cursor:help; border-bottom:1px dotted var(--status-yellow);" title="${(acc.lastError||'').replace(/"/g, '&quot;')}">${acc.status}</span>`;
-    if (acc.status === 'Error' && acc.lastError) return `<span class="st-stopped" style="cursor:help; border-bottom:1px dotted var(--btn-red);" title="${acc.lastError.replace(/"/g, '&quot;')}">ERROR</span>`;
+    if(acc.status.includes('Rate Limit')) return `<span class="st-guard" style="cursor:help;" title="${(acc.lastError||'').replace(/"/g, '&quot;')}">${acc.status}</span>`;
+    if (acc.status === 'Error' && acc.lastError) return `<span class="st-stopped" style="cursor:help;" title="${acc.lastError.replace(/"/g, '&quot;')}">ERROR</span>`;
     return `<span class="st-stopped">${acc.status}</span>`;
 }
 
@@ -126,7 +222,7 @@ function getActionsHtml(acc) {
 function renderTable(accounts) {
     document.getElementById('totalAccounts').innerText = accounts.length;
     document.getElementById('activeBoosters').innerText = accounts.filter(a => a.status==='Running').length;
-    document.getElementById('totalHours').innerText = accounts.reduce((a,c) => a + parseFloat(c.grandTotal||0), 0).toFixed(1) + 'h';
+    document.getElementById('totalHours').innerText = accounts.reduce((a,c) => a + parseFloat(c.grandTotal||0), 0).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'h';
 
     let rebuild = false;
     const existing = document.querySelectorAll('tr[id^="tr-"]');
@@ -137,7 +233,7 @@ function renderTable(accounts) {
         accounts.forEach(acc => {
             const row = document.getElementById(`tr-${acc.username}`);
                     const newStatus = getStatusHtml(acc); if (row.cells[2].innerHTML !== newStatus) row.cells[2].innerHTML = newStatus;
-                    const newHours = `${acc.grandTotal}h`; if (row.cells[3].innerText !== newHours) row.cells[3].innerText = newHours;
+                    const newHours = `${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h`; if (row.cells[3].innerText !== newHours) row.cells[3].innerText = newHours;
                     const hasStopBtn = row.querySelector('.btn-stop-action'); const isRunning = acc.status === 'Running';
                     if ((isRunning && !hasStopBtn) || (!isRunning && hasStopBtn)) row.cells[5].innerHTML = `<div class="actions">${getActionsHtml(acc)}</div>`;
         });
@@ -168,7 +264,7 @@ function createAccountRow(acc) {
         tr.id = `tr-${acc.username}`;
         tr.dataset.category = acc.category || 'Default';
         const showEye = (acc.ip && acc.ip !== "Server IP" && acc.ip !== "Loading...") ? '' : 'style="display:none;"';
-        tr.innerHTML = `<td style="text-align:center;"><input type="checkbox" class="acc-select" value="${acc.username}" onchange="updateBulkUI()"></td><td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:white;font-weight:600;">${acc.grandTotal}h</td><td><div class="ip-cell"><span data-ip="${acc.ip}">${maskIp(acc.ip)}</span><i class="fa-solid fa-eye ip-icon" onclick="toggleIp(this)" ${showEye}></i></div></td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
+        tr.innerHTML = `<td style="text-align:center;"><input type="checkbox" class="acc-select" value="${acc.username}" onchange="updateBulkUI()"></td><td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:var(--text-main);font-weight:600;">${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h</td><td><div class="ip-cell"><span data-ip="${acc.ip}">${maskIp(acc.ip)}</span><i class="fa-solid fa-eye ip-icon" onclick="toggleIp(this)" ${showEye}></i></div></td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
         return tr;
 }
 
@@ -178,14 +274,102 @@ function applyAccountFilter() {
     renderTable(filtered);
 }
 
-async function fetchAccounts() { const d = await apiCall('/api/accounts'); if(d) { cachedAccounts = d; applyAccountFilter(); } }
+async function fetchAccounts() { 
+    const d = await apiCall('/api/accounts'); 
+    if(d) { 
+        cachedAccounts = d; 
+        if (activeTab === 'dash') applyAccountFilter(); 
+        else if (activeTab === 'freegames') renderFreeAccountsUI();
+    } 
+}
 async function fetchLogs() { cachedLogs = await apiCall('/api/logs'); renderLogs(); }
-async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:white;">${x.username}</td><td style="color:#888;">${x.role}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser('${x.username}')"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
+async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:var(--text-main);">${x.username}</td><td style="color:#888;">${x.role}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser('${x.username}')"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
 
 function closeModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none'); }
 function openAddModal() { document.getElementById('newUsername').value=''; document.getElementById('newPassword').value=''; document.getElementById('newCategory').value=''; document.getElementById('newAutoStart').checked=false; document.getElementById('addModal').style.display='flex'; }
 async function openBulkModal() { document.getElementById('bulkData').value=''; document.getElementById('bulkCategory').value=''; document.getElementById('bulkAutoStart').checked=false; const b = await apiCall('/api/bundles'); const s = document.getElementById('bulkBundle'); s.innerHTML='<option value="">Default (CS2)</option>'; for(const k in b) { const o=document.createElement('option'); o.value=k; o.innerText=`${k} (${b[k].length})`; s.appendChild(o); } document.getElementById('bulkModal').style.display='flex'; }
 async function openBulkEditModal() { document.getElementById('bulkEditCategory').value=''; document.getElementById('bulkEditAutoStart').value=''; document.getElementById('bulkEditAutoAccept').value=''; document.getElementById('bulkEditProxies').value=''; document.getElementById('bulkEditAvatar').value=''; document.getElementById('bulkEditPrivacyProfile').value=''; document.getElementById('bulkEditPrivacyInventory').value=''; document.getElementById('bulkEditPrivacyGames').value=''; const b = await apiCall('/api/bundles'); const s = document.getElementById('bulkEditBundle'); s.innerHTML='<option value="">No Change</option>'; for(const k in b) { const o=document.createElement('option'); o.value=k; o.innerText=`${k} (${b[k].length})`; s.appendChild(o); } document.getElementById('bulkEditModal').style.display='flex'; }
+
+async function renderFreeGamesView() {
+    cachedBundles = await apiCall('/api/bundles');
+    const sel = document.getElementById('freeGamesPresetSelect');
+    if(sel) {
+        sel.innerHTML = '<option value="">Load Preset...</option>';
+        for (const k in cachedBundles) {
+            const opt = document.createElement('option');
+            opt.value = k;
+            opt.innerText = `${k} (${cachedBundles[k].length})`;
+            sel.appendChild(opt);
+        }
+    }
+    renderFreeGamesUI();
+    renderFreeAccountsUI();
+}
+
+function renderFreeGamesUI() {
+    const grid = document.getElementById('freeGamesGrid');
+    const query = document.getElementById('freeGameSearch').value.toLowerCase();
+    const filteredGames = POPULAR_FREE_GAMES.filter(g => g.name.toLowerCase().includes(query));
+
+    grid.innerHTML = filteredGames.map(g => {
+        const isSel = selectedFreeGames.includes(g.id);
+        return `<div class="game-card ${isSel?'selected':''}" onclick="toggleFreeGame(${g.id})"><img src="https://steamcdn-a.akamaihd.net/steam/apps/${g.id}/capsule_sm_120.jpg" onerror="this.style.display='none'"><div class="game-card-overlay"><div class="game-card-title">${g.name}</div></div><div class="game-check"><i class="fa-solid fa-check"></i></div></div>`;
+    }).join('');
+}
+
+function renderFreeAccountsUI() {
+    const grid = document.getElementById('freeAccountsGrid');
+    document.getElementById('freeAccCount').innerText = selectedFreeAccounts.length;
+    grid.innerHTML = cachedAccounts.map(a => {
+        const isSel = selectedFreeAccounts.includes(a.username);
+        const avatar = a.avatarHash ? `https://avatars.steamstatic.com/${a.avatarHash}_full.jpg` : 'https://avatars.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg';
+        return `<div class="account-select-item ${isSel?'selected':''}" onclick="toggleFreeAccount('${a.username}')"><img src="${avatar}"><span class="account-select-name">${a.username}</span></div>`;
+    }).join('');
+}
+
+window.toggleFreeGame = function(id) {
+    if(selectedFreeGames.includes(id)) selectedFreeGames = selectedFreeGames.filter(x => x !== id);
+    else selectedFreeGames.push(id);
+    renderFreeGamesUI();
+}
+window.toggleAllFreeGames = function() {
+    const query = document.getElementById('freeGameSearch').value.toLowerCase();
+    const visibleGames = POPULAR_FREE_GAMES.filter(g => g.name.toLowerCase().includes(query)).map(g => g.id);
+    const allVisibleSelected = visibleGames.every(id => selectedFreeGames.includes(id));
+    if (allVisibleSelected) {
+        selectedFreeGames = selectedFreeGames.filter(id => !visibleGames.includes(id));
+    } else {
+        visibleGames.forEach(id => { if (!selectedFreeGames.includes(id)) selectedFreeGames.push(id); });
+    }
+    renderFreeGamesUI();
+}
+window.toggleFreeAccount = function(u) {
+    if(selectedFreeAccounts.includes(u)) selectedFreeAccounts = selectedFreeAccounts.filter(x => x !== u);
+    else selectedFreeAccounts.push(u);
+    renderFreeAccountsUI();
+}
+window.toggleAllFreeAccounts = function() {
+    if(selectedFreeAccounts.length === cachedAccounts.length) selectedFreeAccounts = [];
+    else selectedFreeAccounts = cachedAccounts.map(a => a.username);
+    renderFreeAccountsUI();
+}
+
+window.loadFreeGamesPreset = function() {
+    const name = document.getElementById('freeGamesPresetSelect').value;
+    if (!name || !cachedBundles || !cachedBundles[name]) return;
+    selectedFreeGames = cachedBundles[name].map(g => g.id);
+    renderFreeGamesUI();
+}
+
+window.saveFreeGamesPreset = async function() {
+    if (selectedFreeGames.length === 0) return alert("No games selected to save.");
+    const name = prompt("Enter name for this preset:");
+    if (!name) return;
+    await apiCall('/api/bundles', 'POST', { name, games: selectedFreeGames });
+    showToast("Preset saved!", "fa-check");
+    renderFreeGamesView();
+}
+
 function openUserModal() { document.getElementById('friendUser').value=''; document.getElementById('friendPass').value=''; document.getElementById('addUserModal').style.display='flex'; }
 async function openProfileModal(u, nick) { 
     const d = await apiCall('/api/get_account', 'POST', { username: u });
@@ -200,7 +384,7 @@ async function openProfileModal(u, nick) {
     document.getElementById('profileModal').style.display = 'flex'; 
 }
 function openGuard(u) { document.getElementById('guardUsername').value = u; document.getElementById('guardModal').style.display = 'flex'; }
-function openStats(date, hours) { document.getElementById('statAdded').innerText = new Date(parseInt(date)).toLocaleDateString(); document.getElementById('statBoosted').innerText = parseFloat(hours).toFixed(1); document.getElementById('statsModal').style.display = 'flex'; }
+function openStats(date, hours) { document.getElementById('statAdded').innerText = new Date(parseInt(date)).toLocaleDateString(); document.getElementById('statBoosted').innerText = parseFloat(hours).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); document.getElementById('statsModal').style.display = 'flex'; }
 
 async function openEditModal(u, cat, auto) { const d = await apiCall('/api/get_account', 'POST', { username: u }); document.getElementById('editOldUsername').value = d.username; document.getElementById('editUsername').value = d.username; document.getElementById('editPassword').value = ''; document.getElementById('editPassword').placeholder = '(Unchanged)'; document.getElementById('editSharedSecret').value = d.sharedSecret; document.getElementById('editProxy').value = d.proxy || ''; document.getElementById('editCategory').value = d.category || cat; document.getElementById('editAutoStart').checked = d.autoStart; document.getElementById('editModal').style.display = 'flex'; }
 async function addAccount() { await apiCall('/api/accounts', 'POST', { username: document.getElementById('newUsername').value, password: document.getElementById('newPassword').value, sharedSecret: document.getElementById('newSharedSecret').value, category: document.getElementById('newCategory').value, autoStart: document.getElementById('newAutoStart').checked }); closeModals(); fetchAccounts(); }
@@ -449,6 +633,15 @@ function renderLogs() {
     document.getElementById('logsContainer').innerHTML = filtered.map(m=>`<div class="log-line">${m}</div>`).join('');
 }
 
+function exportLogs() {
+    const text = cachedLogs.join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `bruddibooster_logs_${Date.now()}.txt`;
+    a.click();
+}
+
 function toggleCategorySelect(cb, id) {
     const tbody = document.getElementById(`tbody-${id}`);
     if(tbody) {
@@ -502,11 +695,25 @@ async function submitBulkEdit() {
     if (res && res.success) { showToast(`Updated ${res.count} accounts`, 'fa-check'); closeModals(); fetchAccounts(); }
 }
 
+async function submitFreeGames() {
+    if (selectedFreeAccounts.length === 0) return alert("No accounts selected.");
+    if (selectedFreeGames.length === 0) return alert("No games selected.");
+
+    const accountsWithoutProxy = cachedAccounts.filter(a => selectedFreeAccounts.includes(a.username) && !a.proxy);
+    if (selectedFreeAccounts.length > 1 && accountsWithoutProxy.length > 0) {
+        if (!confirm(`Warning: ${accountsWithoutProxy.length} selected accounts do not have a proxy. Adding games in bulk from the same IP might trigger rate limits. Continue?`)) return;
+    }
+
+    showToast(`Adding games to ${selectedFreeAccounts.length} accounts...`, 'fa-spinner fa-spin');
+    const res = await apiCall('/api/games/free_license', 'POST', { usernames: selectedFreeAccounts, games: selectedFreeGames });
+    if (res && res.success) { showToast(`Request sent for ${res.count} bots`, 'fa-check'); closeModals(); }
+}
+
 // --- PROXIES TAB ---
 async function fetchProxiesView() {
     const accounts = await apiCall('/api/accounts'); // Re-fetch to get latest proxy data
     const tbody = document.getElementById('proxiesTableBody');
-    tbody.innerHTML = accounts.map(a => `<tr><td style="color:white;">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button></td></tr>`).join('');
+    tbody.innerHTML = accounts.map(a => `<tr><td style="color:var(--text-main);">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button></td></tr>`).join('');
 }
 
 async function checkProxy(username) {
@@ -534,6 +741,16 @@ async function saveAllProxies() {
     if (res && res.success) showToast('Proxies Saved', 'fa-floppy-disk');
 }
 
+async function restartAllBots() {
+    if (confirm("Restart ALL running bots? This will stagger logins to prevent rate limits.")) {
+        const res = await apiCall('/api/restart_all', 'POST');
+        if (res && res.success) {
+            showToast(`Restarting ${res.count} bots...`, 'fa-rotate');
+            fetchAccounts();
+        }
+    }
+}
+
 async function panicStop() {
     if (confirm("ARE YOU SURE? This will immediately stop ALL running bots.")) {
         const res = await apiCall('/api/panic', 'POST');
@@ -559,5 +776,31 @@ window.toggleIp = function(btn) {
         span.innerText = fullIp; btn.classList.remove('fa-eye'); btn.classList.add('fa-eye-slash');
     } else {
         span.innerText = maskIp(fullIp); btn.classList.add('fa-eye'); btn.classList.remove('fa-eye-slash');
+    }
+}
+
+window.toggleMobileMenu = function() {
+    document.querySelector('.sidebar .menu').classList.toggle('mobile-visible');
+    document.querySelector('.sidebar-footer').classList.toggle('mobile-visible');
+}
+
+function toggleTheme() {
+    const isLight = document.getElementById('themeToggle').checked;
+    const theme = isLight ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+}
+
+async function exportAccounts() {
+    if(!confirm("Download backup of all accounts (including passwords)?")) return;
+    const res = await apiCall('/api/accounts/export');
+    if(res && res.success) {
+        const blob = new Blob([res.data], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `bruddibooster_accounts_${Date.now()}.txt`;
+        a.click();
+        window.URL.revokeObjectURL(url);
     }
 }

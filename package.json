@@ -2,9 +2,9 @@
   "name": "bruddibooster-v1",
   "version": "1.0.0",
   "description": "Steam Hour Booster with 2FA, Bulk Import and Categories",
-  "main": "server.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "body-parser": "^1.20.2",
@@ -12,9 +12,14 @@
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",
     "qrcode": "^1.5.3",
+    "socket.io": "^4.7.2",
     "speakeasy": "^2.0.0",
     "steamcommunity": "^3.44.0",
     "steam-totp": "^2.1.2",
-    "steam-user": "^4.28.0"
+    "steam-user": "^4.28.0",
+    "better-sqlite3": "^9.4.3",
+    "joi": "^17.12.2",
+    "passport": "^0.7.0",
+    "passport-local": "^1.0.0"
   }
 }

@@ -1,3 +1,6 @@
+const savedTheme = localStorage.getItem('theme');
+if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+
 let authToken = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
 let currentUserRole = localStorage.getItem('userRole') || sessionStorage.getItem('userRole');
 let userHas2FA = false;
