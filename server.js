@@ -1,5 +1,4 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const crypto = require('crypto');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
@@ -8,8 +7,8 @@ const helmet = require('helmet');
 const https = require('https');
 const http = require('http');
 
-const { log, getLogs, encrypt, decrypt } = require('./utils');
-const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings } = require('./data');
+const { log, getLogs, clearLogs, encrypt, decrypt } = require('./utils');
+const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies } = require('./data');
 const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames } = require('./bot');
 
 const app = express();
@@ -39,7 +38,7 @@ app.use(helmet({
     },
     crossOriginEmbedderPolicy: false
 }));
-app.use(bodyParser.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
 
 // --- SOCKET.IO ---
@@ -224,12 +223,19 @@ app.post('/api/restart_all', (req, res) => {
             count++;
         }
     });
-    let delay = 2000;
-    botsToRestart.forEach(u => {
-        setTimeout(() => { const acc = getAccount(u); if (acc) startBotProcess(acc); }, delay);
-        delay += 3000;
-    });
-    log(`Restart All triggered. Cycling ${count} bots.`, "SYSTEM", req.user.username);
+    
+    const BATCH_SIZE = 5;
+    let idx = 0;
+    const runBatch = () => {
+        const batch = botsToRestart.slice(idx, idx + BATCH_SIZE);
+        if(batch.length === 0) return;
+        batch.forEach(u => { const acc = getAccount(u); if (acc) startBotProcess(acc); });
+        idx += BATCH_SIZE;
+        if(idx < botsToRestart.length) setTimeout(runBatch, 2000);
+    };
+    setTimeout(runBatch, 1000);
+
+    log(`Restart All triggered. Cycling ${count} bots (Threaded).`, "SYSTEM", req.user.username);
     res.json({ success: true, count });
 });
 app.post('/api/panic', (req, res) => {
@@ -281,26 +287,29 @@ app.post('/api/games/free_license', (req, res) => {
             
             const promises = batch.map(u => {
                 const bot = activeBots[u];
+                let p;
                 if (bot && bot.client && bot.status === 'Running') { 
-                    return requestFreeGames(u, games); 
+                    p = requestFreeGames(u, games); 
                 } else if (autoStart) { 
                     queueFreeGames(u, games, true); 
                     startBotProcess(getAccount(u)); 
-                    return Promise.resolve({ result: 'queued' });
+                    p = Promise.resolve({ result: 'queued' });
+                } else {
+                    p = Promise.resolve({ result: 'error', msg: 'Offline' });
                 }
-                return Promise.resolve({ result: 'error', msg: 'Offline' });
+                
+                return p.then(r => {
+                    if (r.result === 'success') stats.success++;
+                    else if (r.result === 'owned') stats.owned++;
+                    else if (r.result === 'error') stats.failed++;
+                    else if (r.result === 'queued') stats.queued++;
+                    processed++;
+                    io.emit('free_games_progress', { processed, total, stats });
+                    return r;
+                });
             });
 
-            const results = await Promise.all(promises);
-            results.forEach(r => {
-                if (r.result === 'success') stats.success++;
-                else if (r.result === 'owned') stats.owned++;
-                else if (r.result === 'error') stats.failed++;
-                else if (r.result === 'queued') stats.queued++;
-            });
-
-            processed += batch.length;
-            io.emit('free_games_progress', { processed, total, stats });
+            await Promise.all(promises);
             if (i + BATCH_SIZE < processList.length) await new Promise(r => setTimeout(r, 10000));
         }
         io.emit('free_games_progress', { processed: total, total, stats, complete: true });
@@ -319,6 +328,11 @@ app.get('/api/logs', (req, res) => {
         logs = logs.filter(l => l.relatedUser && userAccounts.includes(l.relatedUser));
     }
     res.json(logs.map(l => l.text));
+});
+app.post('/api/logs/clear', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
+    clearLogs();
+    res.json({ success: true });
 });
 app.get('/api/search_games', (req, res) => { const q = (req.query.q || "").toLowerCase().trim(); if (!q) return res.json([]); res.json(searchGames(q)); });
 app.get('/api/users', (req, res) => { if (req.user.role !== 'admin') return res.status(403).json([]); res.json(getUsers().map(u => ({ username: u.username, role: u.role }))); });
@@ -348,8 +362,20 @@ app.post('/api/settings', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
     const s = getSettings(); 
     s.discordWebhook = req.body.discordWebhook; 
+    s.rotationInterval = req.body.rotationInterval;
     saveSettings(s); 
     res.json({ success: true }); 
+});
+app.get('/api/proxies/global', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json([]);
+    res.json(getGlobalProxies());
+});
+app.post('/api/proxies/global', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
+    const { proxies } = req.body;
+    if (!Array.isArray(proxies)) return res.status(400).json({});
+    saveGlobalProxies(proxies);
+    res.json({ success: true });
 });
 app.post('/api/settings/test_webhook', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});

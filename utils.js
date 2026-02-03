@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const KEY_FILE = path.join(__dirname, 'secret.key');
-const MAX_LOGS = 100;
+const MAX_LOGS = 1000;
 const systemLogs = [];
 let logListener = null;
 
@@ -14,11 +14,12 @@ function log(msg, type='INFO', relatedUser=null) {
     const entry = `[${timestamp}] [${type}] ${msg}`;
     console.log(entry);
     systemLogs.unshift({ text: entry, relatedUser });
-    if(systemLogs.length > MAX_LOGS) systemLogs.pop();
+    if(systemLogs.length > MAX_LOGS) systemLogs.splice(MAX_LOGS);
     if (logListener) logListener({ text: entry, relatedUser });
 }
 
 function getLogs() { return systemLogs; }
+function clearLogs() { systemLogs.length = 0; }
 
 // --- SECURITY ---
 let ENCRYPTION_KEY;
@@ -50,4 +51,4 @@ function decrypt(text) {
     } catch (e) { return text; }
 }
 
-module.exports = { log, getLogs, encrypt, decrypt, setLogListener };
+module.exports = { log, getLogs, clearLogs, encrypt, decrypt, setLogListener };

@@ -98,7 +98,7 @@ textarea { resize: vertical; min-height: 100px; }
 .search-results { background: #232830; border: 1px solid var(--border); max-height: 200px; overflow-y: auto; display: none; position: absolute; width: 100%; z-index: 100; border-radius: 6px; margin-top: 5px; }
 .search-item { padding: 8px 12px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between; }
 .search-item:hover { background: var(--accent); color: white; }
-.log-container { background: #000; padding: 15px; border-radius: 8px; height: 500px; overflow-y: auto; font-family: monospace; font-size: 12px; color: #a0a0a0; }
+.log-container { background: #000; padding: 15px; border-radius: 8px; height: 700px; overflow-y: auto; font-family: monospace; font-size: 12px; color: #a0a0a0; }
 .log-line { border-bottom: 1px solid #111; padding: 4px 0; }
 .settings-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
 .settings-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 25px; transition: all 0.3s ease; }

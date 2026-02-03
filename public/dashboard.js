@@ -23,7 +23,6 @@ const POPULAR_FREE_GAMES = [
     { id: 570, name: "Dota 2" },
     { id: 578080, name: "PUBG: BATTLEGROUNDS" },
     { id: 1172470, name: "Apex Legends" },
-    { id: 1244630, name: "NARAKA: BLADEPOINT" },
     { id: 1085660, name: "Destiny 2" },
     { id: 230410, name: "Warframe" },
     { id: 236390, name: "War Thunder" },
@@ -143,9 +142,9 @@ window.onDashboardLoaded = function() {
 function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active')); document.getElementById(`nav-${tab}`).classList.add('active');
-    ['dash','users','logs','settings','bundles','proxies','freegames','statistics'].forEach(v => document.getElementById(`view-${v}`).style.display='none');
+    ['dash','users','logs','settings','bundles','proxies','freegames','statistics','faq'].forEach(v => document.getElementById(`view-${v}`).style.display='none');
     document.getElementById(`view-${tab}`).style.display='block';
-    if(tab==='dash') fetchAccounts(); if(tab==='users') fetchUsers(); if(tab==='logs') fetchLogs(); if(tab==='settings') renderSettings(); if(tab==='bundles') fetchBundlesView(); if(tab==='proxies') fetchProxiesView(); if(tab==='freegames') renderFreeGamesView(); if(tab==='statistics') renderStatisticsView();
+    if(tab==='dash') fetchAccounts(); if(tab==='users') fetchUsers(); if(tab==='logs') fetchLogs(); if(tab==='settings') renderSettings(); if(tab==='bundles') fetchBundlesView(); if(tab==='proxies') fetchProxiesView(); if(tab==='freegames') renderFreeGamesView(); if(tab==='statistics') renderStatisticsView(); if(tab==='faq') renderFaqView();
     if (window.innerWidth <= 768) {
         document.querySelector('.sidebar .menu').classList.remove('mobile-visible');
         document.querySelector('.sidebar-footer').classList.remove('mobile-visible');
@@ -193,6 +192,35 @@ function renderStatisticsView() {
             plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af' } } }
         }
     });
+}
+
+function renderFaqView() {
+    const codes = [
+        { code: 5, name: 'InvalidPassword', desc: 'Your password is incorrect. Please update it in the dashboard.' },
+        { code: 6, name: 'LoggedInElsewhere', desc: 'This account is logged in somewhere else (or you launched the game on your PC). The bot will reconnect automatically.' },
+        { code: 43, name: 'VACCheckTimedOut', desc: 'Often indicates a "zombie" session or account issue. The system will automatically disable accounts with this error to prevent loops. Try changing the password or logging in manually.' },
+        { code: 63, name: 'AccountLogonDenied', desc: 'Steam Guard is required. Check your email for the code.' },
+        { code: 84, name: 'RateLimitExceeded', desc: 'Too many login attempts from this IP. The bot will pause for 5 minutes and retry.' },
+        { code: 87, name: 'InvalidLoginAuthCode', desc: 'The 2FA/Steam Guard code provided was invalid.' },
+        { code: 88, name: 'AccountLogonDeniedNoMail', desc: 'Steam Guard needed but no email was sent. Usually means you need to log in manually once.' }
+    ];
+
+    const faqs = [
+        { q: "Why are my accounts stopping?", a: "Check the 'Last Error' column or the Logs tab. Common reasons include invalid passwords, Steam Guard requirements, or Steam server issues." },
+        { q: "What does Error 43 mean?", a: "It's a generic Steam error often related to connection issues or account flags. BruddiBooster disables these accounts automatically to prevent infinite restart loops." },
+        { q: "How do I add proxies?", a: "Go to the 'Proxies' tab. You can assign a proxy to each account individually or use the Bulk Import tool." },
+        { q: "Can I farm more than 32 games?", a: "Yes! If you add more than 32 games to an account, the bot will automatically rotate through them in batches every hour." },
+        { q: "Why can't I add some free games?", a: "Some games are region-locked. If the bot says 'Possible Region Lock', the game is likely not available in the account's store country." }
+    ];
+
+    document.getElementById('faqCodesBody').innerHTML = codes.map(c => `<tr><td><span class="tag" style="background:var(--bg-input);">${c.code}</span></td><td style="font-weight:600;color:var(--accent);">${c.name}</td><td style="color:var(--text-muted);">${c.desc}</td></tr>`).join('');
+    
+    document.getElementById('faqList').innerHTML = faqs.map(f => `
+        <div style="background:var(--bg-input);padding:15px;border-radius:8px;border:1px solid var(--border);">
+            <div style="font-weight:600;color:var(--text-main);margin-bottom:5px;"><i class="fa-solid fa-q"></i> ${f.q}</div>
+            <div style="color:var(--text-muted);font-size:14px;line-height:1.4;">${f.a}</div>
+        </div>
+    `).join('');
 }
 
 async function logout() { await apiCall('/api/logout', 'POST'); localStorage.removeItem('authToken'); localStorage.removeItem('userRole'); sessionStorage.removeItem('authToken'); sessionStorage.removeItem('userRole'); location.reload(); }
@@ -324,9 +352,9 @@ function getActionsHtml(acc) {
     const gamesJson = JSON.stringify(acc.games).replace(/"/g, '&quot;');
     const profileBtn = acc.steamId ? `<a href="https://steamcommunity.com/profiles/${acc.steamId}" target="_blank" class="icon-btn"><i class="fa-solid fa-up-right-from-square"></i></a>` : '';
     
-    const gameCountDisplay = acc.games.length > 33 
+    const gameCountDisplay = acc.games.length > 32 
         ? `${acc.games.length} <i class="fa-solid fa-circle-info" title="Rotation Active"></i>` 
-        : `${acc.games.length}/33`;
+        : `${acc.games.length}/32`;
 
     return `${isRunning?`<button class="icon-btn btn-stop-action" onclick="handleAction('stop','${acc.username}')"><i class="fa-solid fa-stop"></i></button><button class="icon-btn" onclick="handleAction('restart','${acc.username}')"><i class="fa-solid fa-rotate-right"></i></button>`:`<button class="icon-btn btn-play" onclick="handleAction('start','${acc.username}')"><i class="fa-solid fa-play"></i></button>`}<button class="icon-btn" style="width:auto;padding:0 12px;gap:6px;" onclick="openGamesModal('${acc.username}', ${gamesJson}, '${acc.customStatus||''}', ${acc.personaState})"><i class="fa-solid fa-gamepad"></i> <span style="font-size:11px;font-weight:600;">${gameCountDisplay}</span></button><button class="icon-btn" onclick="openStats('${acc.addedAt}', ${acc.boostedHours})"><i class="fa-solid fa-chart-line"></i></button>${profileBtn}<button class="icon-btn" onclick="openProfileModal('${acc.username}', '${(acc.nickname||"").replace(/'/g, "\\'")}')" title="Edit Profile"><i class="fa-solid fa-user-pen"></i></button><button class="icon-btn" onclick="openEditModal('${acc.username}', '${acc.category||''}', ${acc.autoStart})"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteAccount('${acc.username}')"><i class="fa-solid fa-trash"></i></button>${acc.status==='Need Guard'?`<button class="icon-btn" style="color:var(--status-yellow);border-color:var(--status-yellow);" onclick="openGuard('${acc.username}')"><i class="fa-solid fa-key"></i></button>`:''}`;
 }
@@ -347,17 +375,20 @@ function renderTable(accounts) {
     document.getElementById('totalHours').innerText = accounts.reduce((a,c) => a + parseFloat(c.grandTotal||0), 0).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'h';
 
     let rebuild = false;
+    if (currentSort.column) rebuild = true;
     const existing = document.querySelectorAll('tr[id^="tr-"]');
-    if (existing.length !== accounts.length) rebuild = true;
+    if (!rebuild && existing.length !== accounts.length) rebuild = true;
     else { for (const acc of accounts) { const row = document.getElementById(`tr-${acc.username}`); if (!row || row.dataset.category !== (acc.category || 'Default')) { rebuild = true; break; } } }
 
     if (!rebuild) {
         accounts.forEach(acc => {
             const row = document.getElementById(`tr-${acc.username}`);
-                    const newStatus = getStatusHtml(acc); if (row.cells[2].innerHTML !== newStatus) row.cells[2].innerHTML = newStatus;
-                    const newHours = `${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h`; if (row.cells[3].innerText !== newHours) row.cells[3].innerText = newHours;
-                    const hasStopBtn = row.querySelector('.btn-stop-action'); const isRunning = acc.status === 'Running';
-                    if ((isRunning && !hasStopBtn) || (!isRunning && hasStopBtn)) row.cells[5].innerHTML = `<div class="actions">${getActionsHtml(acc)}</div>`;
+            if (row) {
+                const newStatus = getStatusHtml(acc); if (row.cells[2].innerHTML !== newStatus) row.cells[2].innerHTML = newStatus;
+                const newHours = `${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h`; if (row.cells[3].innerText !== newHours) row.cells[3].innerText = newHours;
+                const hasStopBtn = row.querySelector('.btn-stop-action'); const isRunning = acc.status === 'Running';
+                if ((isRunning && !hasStopBtn) || (!isRunning && hasStopBtn)) row.cells[5].innerHTML = `<div class="actions">${getActionsHtml(acc)}</div>`;
+            }
         });
         return;
     }
@@ -441,7 +472,20 @@ function resolveConfirm(res) {
 }
 function openAddModal() { document.getElementById('newUsername').value=''; document.getElementById('newPassword').value=''; document.getElementById('newCategory').value=''; document.getElementById('newAutoStart').checked=false; document.getElementById('addModal').style.display='flex'; }
 async function openBulkModal() { document.getElementById('bulkData').value=''; document.getElementById('bulkCategory').value=''; document.getElementById('bulkAutoStart').checked=false; document.getElementById('bulkProxyWait').checked=false; const b = await apiCall('/api/bundles'); const s = document.getElementById('bulkBundle'); s.innerHTML='<option value="">Default (CS2)</option><option value="none">No Games (Online Only)</option>'; for(const k in b) { const o=document.createElement('option'); o.value=k; o.innerText=`${k} (${b[k].length})`; s.appendChild(o); } document.getElementById('bulkModal').style.display='flex'; }
-async function openBulkEditModal() { document.getElementById('bulkEditCategory').value=''; document.getElementById('bulkEditAutoStart').value=''; document.getElementById('bulkEditAutoAccept').value=''; document.getElementById('bulkEditProxies').value=''; document.getElementById('bulkEditAvatar').value=''; document.getElementById('bulkEditPrivacyProfile').value=''; document.getElementById('bulkEditPrivacyInventory').value=''; document.getElementById('bulkEditPrivacyGames').value=''; const b = await apiCall('/api/bundles'); const s = document.getElementById('bulkEditBundle'); s.innerHTML='<option value="">No Change</option><option value="none">Clear Games</option>'; for(const k in b) { const o=document.createElement('option'); o.value=k; o.innerText=`${k} (${b[k].length})`; s.appendChild(o); } document.getElementById('bulkEditModal').style.display='flex'; }
+async function openBulkEditModal() { 
+    const setVal = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
+    setVal('bulkEditCategory', '');
+    setVal('bulkEditAutoStart', '');
+    setVal('bulkEditProxies', '');
+    
+    const b = await apiCall('/api/bundles'); 
+    const s = document.getElementById('bulkEditBundle'); 
+    if (s) {
+        s.innerHTML='<option value="">No Change</option><option value="none">Clear Games</option>'; 
+        for(const k in b) { const o=document.createElement('option'); o.value=k; o.innerText=`${k} (${b[k].length})`; s.appendChild(o); } 
+    }
+    document.getElementById('bulkEditModal').style.display='flex'; 
+}
 
 async function renderFreeGamesView() {
     cachedBundles = await apiCall('/api/bundles');
@@ -662,12 +706,12 @@ function renderTags() {
     b.innerHTML = currentSelectedGames.map(g => `<div class="tag"><span>${g.name}</span><span class="tag-id">${g.id}</span><span class="tag-x" onclick="removeGame(${g.id})">&times;</span></div>`).join('');
     const count = currentSelectedGames.length;
     const el = document.getElementById('gameCounter');
-    if (count > 33) {
-        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 33 games at once. Since you selected more, the bot will rotate through them in batches of 33 every hour."></i>`;
+    if (count > 32) {
+        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 32 games at once. Since you selected more, the bot will rotate through them in batches of 32 every hour."></i>`;
         el.style.color = 'var(--accent)';
     } else {
-        el.innerText = `${count}/33`;
-        el.style.color = count >= 33 ? 'var(--btn-red)' : 'var(--text-muted)';
+        el.innerText = `${count}/32`;
+        el.style.color = count >= 32 ? 'var(--btn-red)' : 'var(--text-muted)';
     }
 }
 function removeGame(id) { currentSelectedGames = currentSelectedGames.filter(g=>g.id!==id); renderTags(); }
@@ -798,12 +842,12 @@ function renderBundleTags() {
     b.innerHTML = currentBundleGames.map(g => `<div class="tag"><span>${g.name}</span><span class="tag-id">${g.id}</span><span class="tag-x" onclick="removeBundleGame(${g.id})">&times;</span></div>`).join('');
     const count = currentBundleGames.length;
     const el = document.getElementById('bundleGameCounter');
-    if (count > 33) {
-        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 33 games at once. Since this bundle has more, bots will rotate through them in batches of 33 every hour."></i>`;
+    if (count > 32) {
+        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 32 games at once. Since this bundle has more, bots will rotate through them in batches of 32 every hour."></i>`;
         el.style.color = 'var(--accent)';
     } else {
-        el.innerText = `${count}/33`;
-        el.style.color = count >= 33 ? 'var(--btn-red)' : 'var(--text-muted)';
+        el.innerText = `${count}/32`;
+        el.style.color = count >= 32 ? 'var(--btn-red)' : 'var(--text-muted)';
     }
 }
 function removeBundleGame(id) { currentBundleGames = currentBundleGames.filter(g=>g.id!==id); renderBundleTags(); }
@@ -839,6 +883,13 @@ function exportLogs() {
     a.click();
 }
 
+async function clearLogs() {
+    if(await showConfirm("Clear all system logs?")) {
+        await apiCall('/api/logs/clear', 'POST');
+        fetchLogs();
+    }
+}
+
 function toggleCategorySelect(cb, id) {
     const tbody = document.getElementById(`tbody-${id}`);
     if(tbody) {
@@ -864,7 +915,12 @@ async function bulkAction(action) {
     if (selected.length === 0) return;
     if (action === 'delete' && !await showConfirm(`Delete ${selected.length} accounts?`)) return;
     showToast(`Processing ${action} for ${selected.length} accounts...`, 'fa-gear');
-    for (const username of selected) { await apiCall(`/api/${action}`, 'POST', { username }); }
+    try {
+        for (const username of selected) { await apiCall(`/api/${action}`, 'POST', { username }); }
+    } catch (e) {
+        console.error(e);
+        showToast("Some actions failed. Check logs.", "fa-circle-exclamation");
+    }
     document.querySelectorAll('.acc-select').forEach(c => c.checked = false);
     document.querySelectorAll('input[onchange^="toggleCategorySelect"]').forEach(c => c.checked = false);
     updateBulkUI();
@@ -877,6 +933,7 @@ async function submitBulkEdit() {
     
     const cat = document.getElementById('bulkEditCategory').value.trim();
     const auto = document.getElementById('bulkEditAutoStart').value;
+    const bundle = document.getElementById('bulkEditBundle') ? document.getElementById('bulkEditBundle').value : '';
     const proxies = document.getElementById('bulkEditProxies').value.trim().split(/\r?\n/).filter(l => l.trim() !== '');
     
     const updates = [];
@@ -884,6 +941,7 @@ async function submitBulkEdit() {
         const update = { username: u };
         if (cat) update.category = cat;
         if (auto !== "") update.autoStart = (auto === "true");
+        if (bundle) update.bundle = bundle;
         if (proxies.length > 0) update.proxy = proxies[i % proxies.length]; // Round-robin assignment
         updates.push(update);
     });
@@ -926,6 +984,7 @@ async function submitFreeGames() {
 async function fetchProxiesView() {
     if (document.querySelector('.proxy-input:focus')) return;
     const accounts = await apiCall('/api/accounts');
+    fetchGlobalPool();
     const container = document.getElementById('proxiesContainer');
     container.innerHTML = '';
 
@@ -941,6 +1000,18 @@ async function fetchProxiesView() {
         section.innerHTML = `<div class="category-header" onclick="toggleProxyCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="proxy-cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="proxy-cat-body-${safeId}"><div class="panel"><table><thead><tr><th>Username</th><th>Proxy (http://user:pass@ip:port)</th><th>Action</th></tr></thead><tbody>${groups[cat].map(a => `<tr><td style="color:var(--text-main);">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" data-category="${a.category||'Default'}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><div class="actions"><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button><button class="icon-btn" onclick="saveProxy('${a.username}')" title="Apply Proxy"><i class="fa-solid fa-check"></i></button><button class="icon-btn btn-trash" onclick="deleteProxy('${a.username}')" title="Remove Proxy"><i class="fa-solid fa-trash"></i></button></div></td></tr>`).join('')}</tbody></table></div></div>`;
         container.appendChild(section);
     });
+}
+
+async function fetchGlobalPool() {
+    const proxies = await apiCall('/api/proxies/global');
+    if (proxies) document.getElementById('globalProxyPoolInput').value = proxies.join('\n');
+}
+
+async function saveGlobalPool() {
+    const text = document.getElementById('globalProxyPoolInput').value.trim();
+    const proxies = text.split(/\r?\n/).filter(l => l.trim() !== '');
+    const res = await apiCall('/api/proxies/global', 'POST', { proxies });
+    if (res && res.success) showToast('Global Proxy Pool Saved', 'fa-check');
 }
 
 async function checkProxy(username, silent = false) {

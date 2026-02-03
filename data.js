@@ -7,6 +7,7 @@ const USERS_FILE = path.join(__dirname, 'users.json');
 const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
 const BUNDLES_FILE = path.join(__dirname, 'bundles.json');
 const SETTINGS_FILE = path.join(__dirname, 'settings.json');
+const PROXIES_FILE = path.join(__dirname, 'proxies.json');
 
 if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR);
 
@@ -75,4 +76,11 @@ if (fs.existsSync(SETTINGS_FILE)) { try { globalSettings = JSON.parse(fs.readFil
 function getSettings() { return globalSettings; }
 function saveSettings(s) { globalSettings = s; fs.writeFileSync(SETTINGS_FILE, JSON.stringify(globalSettings, null, 2)); }
 
-module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings };
+// --- GLOBAL PROXIES ---
+let globalProxies = [];
+if (fs.existsSync(PROXIES_FILE)) { try { globalProxies = JSON.parse(fs.readFileSync(PROXIES_FILE)); } catch(e){} }
+
+function getGlobalProxies() { return globalProxies; }
+function saveGlobalProxies(p) { globalProxies = p; fs.writeFileSync(PROXIES_FILE, JSON.stringify(globalProxies, null, 2)); }
+
+module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies };
