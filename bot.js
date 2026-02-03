@@ -6,6 +6,7 @@ const { log } = require('./utils');
 const { getAllAccounts, getAccount, saveAccount, getSettings } = require('./data');
 
 const activeBots = {}; 
+const pendingFreeGames = {};
 let allSteamApps = [];
 const TOP_GAMES_FALLBACK = { 730: "Counter-Strike 2", 440: "Team Fortress 2", 570: "Dota 2", 252490: "Rust", 271590: "GTA V" };
 
@@ -94,13 +95,27 @@ function startBotProcess(account) {
     client.on('loggedOn', () => {
         const state = account.personaState !== undefined ? account.personaState : SteamUser.EPersonaState.Online;
         client.setPersona(state);
-        updateBotGames(username); // Initialize games/rotation
+        
+        if (pendingFreeGames[username] && pendingFreeGames[username].autoStop) {
+            log(`${username} login for Free Games task (No Farming).`, "BOT", username);
+        } else {
+            updateBotGames(username); // Initialize games/rotation
+        }
+
         activeBots[username].status = 'Running';
         activeBots[username].lastError = null;
         const proxyMsg = (proxy && proxy.trim().length > 0) ? ` (Proxy: ${proxy})` : '';
         log(`${username} successfully logged in${proxyMsg}.`, "SUCCESS", username);
         
         updateHours(username, client);
+
+        if (pendingFreeGames[username]) {
+            const task = pendingFreeGames[username];
+            delete pendingFreeGames[username];
+            log(`${username} processing queued free games...`, "BOT", username);
+            requestFreeGames(username, task.games, task.autoStop);
+        }
+
         if (client.steamID) { account.steamId = client.steamID.getSteamID64(); saveAccount(account); }
         
         client.getPersonas([client.steamID], () => { setTimeout(() => { if (!client.steamID) return; const u = client.users[client.steamID.getSteamID64()]; if (u) { if(u.player_name) account.nickname = u.player_name; if(u.avatar_hash) account.avatarHash = u.avatar_hash.toString('hex'); saveAccount(account); } }, 1000); });
@@ -165,7 +180,7 @@ function updateBotGames(username) {
     if (bot.rotationInterval) { clearInterval(bot.rotationInterval); bot.rotationInterval = null; }
     bot.nextRotation = null;
 
-    if (acc.games && acc.games.length > 32) {
+    if (acc.games && acc.games.length > 33) {
         bot.rotateIndex = 0;
         const rotate = () => {
             if (!bot.client) return;
@@ -173,17 +188,22 @@ function updateBotGames(username) {
             let idx = bot.rotateIndex || 0;
             if (idx >= allGames.length) idx = 0;
             
-            const gamesToPlay = allGames.slice(idx, idx + 32);
-            bot.rotateIndex = (idx + 32) >= allGames.length ? 0 : idx + 32;
+            const gamesToPlay = allGames.slice(idx, idx + 33);
+            bot.rotateIndex = (idx + 33) >= allGames.length ? 0 : idx + 33;
             
-            const currentBatch = Math.floor(idx / 32) + 1;
-            const totalBatches = Math.ceil(allGames.length / 32);
+            const currentBatch = Math.floor(idx / 33) + 1;
+            const totalBatches = Math.ceil(allGames.length / 33);
+            
+            const intervalMinutes = getSettings().rotationInterval || 60;
+            const intervalMs = intervalMinutes * 60 * 1000;
+
             log(`${username} rotating games. Playing batch ${currentBatch}/${totalBatches} (Total: ${allGames.length} games).`, "BOT", username);
             bot.client.gamesPlayed(getGamePayload(gamesToPlay, acc.customStatus));
-            bot.nextRotation = Date.now() + 3600000;
+            bot.nextRotation = Date.now() + intervalMs;
         };
         rotate(); // Play first set immediately
-        bot.rotationInterval = setInterval(rotate, 3600000); // Rotate every 1 hour
+        const intervalMinutes = getSettings().rotationInterval || 60;
+        bot.rotationInterval = setInterval(rotate, intervalMinutes * 60 * 1000);
     } else {
         bot.client.gamesPlayed(getGamePayload(acc.games, acc.customStatus));
     }
@@ -266,9 +286,9 @@ function updateProfile(username, { nickname, avatar, realName, customURL, privac
         }
         if (privacy && (privacy.profile || privacy.inventory || privacy.ownedGames)) {
             const pSettings = {};
-            if (privacy.profile) { pSettings.profile = parseInt(privacy.profile); acc.privacy = acc.privacy || {}; acc.privacy.profile = pSettings.profile; }
-            if (privacy.inventory) { pSettings.inventory = parseInt(privacy.inventory); acc.privacy = acc.privacy || {}; acc.privacy.inventory = pSettings.inventory; }
-            if (privacy.ownedGames) { pSettings.ownedGames = parseInt(privacy.ownedGames); acc.privacy = acc.privacy || {}; acc.privacy.ownedGames = pSettings.ownedGames; }
+            if (privacy.profile) { pSettings.privacyProfile = parseInt(privacy.profile); acc.privacy = acc.privacy || {}; acc.privacy.profile = pSettings.privacyProfile; }
+            if (privacy.inventory) { pSettings.privacyInventory = parseInt(privacy.inventory); acc.privacy = acc.privacy || {}; acc.privacy.inventory = pSettings.privacyInventory; }
+            if (privacy.ownedGames) { pSettings.privacyOwnedGames = parseInt(privacy.ownedGames); acc.privacy = acc.privacy || {}; acc.privacy.ownedGames = pSettings.privacyOwnedGames; }
             
             community.profileSettings(pSettings, (err) => { 
                 if(err) log(`${username} privacy update failed: ${err.message}`, "ERROR", username); 
@@ -326,25 +346,46 @@ setInterval(() => {
     });
 }, 3600000);
 
-function requestFreeGames(username, gameIds) {
-    const bot = activeBots[username];
-    if (!bot || !bot.client || bot.status !== 'Running') {
-        log(`${username} cannot add free games: Bot not running.`, "WARN", username);
-        return;
-    }
-    
-    bot.client.requestFreeLicense(gameIds, (err, grantedPackages, grantedAppIDs) => {
-        if (err) {
-            log(`${username} failed to add free games: ${err.message}`, "ERROR", username);
-        } else {
-            if (grantedAppIDs && grantedAppIDs.length > 0) {
-                log(`${username} added ${grantedAppIDs.length} free games to library.`, "SUCCESS", username);
-                updateHours(username, bot.client); // Refresh owned games list
-            } else {
-                log(`${username} requested free games, but none were granted (already owned?).`, "INFO", username);
-            }
+function requestFreeGames(username, gameIds, autoStop = false) {
+    return new Promise((resolve) => {
+        const bot = activeBots[username];
+        if (!bot || !bot.client || bot.status !== 'Running') {
+            log(`${username} cannot add free games: Bot not running.`, "WARN", username);
+            return resolve({ result: 'error', msg: 'Bot not running' });
         }
+        
+        bot.client.requestFreeLicense(gameIds, (err, grantedPackages, grantedAppIDs) => {
+            if (err) {
+                log(`${username} failed to add free games: ${err.message}`, "ERROR", username);
+                if (autoStop) {
+                    log(`${username} stopping after failed free games task.`, "BOT", username);
+                    setTimeout(() => stopBot(username), 5000);
+                }
+                resolve({ result: 'error', msg: err.message });
+            } else {
+                if (grantedAppIDs && grantedAppIDs.length > 0) {
+                    log(`${username} added ${grantedAppIDs.length} free games to library.`, "SUCCESS", username);
+                    updateHours(username, bot.client); // Refresh owned games list
+                    if (autoStop) {
+                        log(`${username} stopping after free games task (Auto-Stop).`, "BOT", username);
+                        setTimeout(() => stopBot(username), 5000);
+                    }
+                    resolve({ result: 'success', count: grantedAppIDs.length });
+                } else {
+                    log(`${username} requested free games, but none were granted (already owned?).`, "INFO", username);
+                    if (autoStop) {
+                        log(`${username} stopping after free games task.`, "BOT", username);
+                        setTimeout(() => stopBot(username), 5000);
+                    }
+                    resolve({ result: 'owned' });
+                }
+            }
+        });
     });
 }
 
-module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames };
+function queueFreeGames(username, games, autoStop = false) {
+    pendingFreeGames[username] = { games, autoStop };
+}
+
+module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames };

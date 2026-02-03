@@ -10,7 +10,7 @@ const http = require('http');
 
 const { log, getLogs, encrypt, decrypt } = require('./utils');
 const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings } = require('./data');
-const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames } = require('./bot');
+const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames } = require('./bot');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,7 +28,7 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"], // 'unsafe-inline' needed for the inline script in index.html
+            scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"], // 'unsafe-inline' needed for the inline script in index.html
             scriptSrcAttr: ["'unsafe-inline'"], // Needed for event handlers
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
             fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
@@ -97,10 +97,13 @@ app.use('/api/', requireAuth);
 app.post('/api/library', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ games: acc.ownedGames || [] }); });
 
 app.post('/api/accounts/bulk', (req, res) => {
-    const { data, category, autoStart, autoAccept, bundle } = req.body; const lines = data.split(/\r?\n/); let c = 0;
-    const bundles = getBundles(); const selectedGames = (bundle && bundles[bundle]) ? bundles[bundle] : [730];
-    lines.forEach(l => { const p = l.trim().split(':'); if (p.length >= 2 && !getAccount(p[0].trim())) { saveAccount({ username: p[0].trim(), password: p[1].trim(), sharedSecret: p[2]?p[2].trim():"", proxy: p[3]?p[3].trim():"", category: category||"Default", autoStart: !!autoStart, autoAccept: !!autoAccept, games: selectedGames, nickname: null, owner: req.user.username, grandTotal: "0.0", addedAt: Date.now(), boostedHours: 0, personaState: 1 }); c++; } });
-    log(`Bulk added ${c}`, "SYSTEM"); res.json({ success: true, count: c });
+    const { data, category, autoStart, autoAccept, bundle } = req.body; const lines = data.split(/\r?\n/); let c = 0; let skipped = 0;
+    const bundles = getBundles(); 
+    let selectedGames = [730];
+    if (bundle === 'none') selectedGames = [];
+    else if (bundle && bundles[bundle]) selectedGames = bundles[bundle];
+    lines.forEach(l => { const p = l.trim().split(':'); if (p.length >= 2) { if (!getAccount(p[0].trim())) { saveAccount({ username: p[0].trim(), password: p[1].trim(), sharedSecret: p[2]?p[2].trim():"", proxy: p[3]?p[3].trim():"", category: category||"Default", autoStart: !!autoStart, autoAccept: !!autoAccept, games: selectedGames, nickname: null, owner: req.user.username, grandTotal: "0.0", addedAt: Date.now(), boostedHours: 0, personaState: 1 }); c++; } else { skipped++; } } });
+    log(`Bulk added ${c}, skipped ${skipped}`, "SYSTEM"); res.json({ success: true, count: c, skipped });
 });
 app.get('/api/accounts/export', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
@@ -136,11 +139,15 @@ app.post('/api/accounts/bulk_update', (req, res) => {
             if (changes.autoAccept !== undefined) acc.autoAccept = changes.autoAccept;
             
             // Bulk Games (Bundle)
-            if (changes.bundle && bundles[changes.bundle]) {
-                acc.games = bundles[changes.bundle];
-                const bot = activeBots[acc.username];
-                if (bot && bot.client && bot.status === 'Running') {
-                    updateBotGames(acc.username);
+            if (changes.bundle) {
+                if (changes.bundle === 'none') {
+                    acc.games = [];
+                    const bot = activeBots[acc.username];
+                    if (bot && bot.client && bot.status === 'Running') updateBotGames(acc.username);
+                } else if (bundles[changes.bundle]) {
+                    acc.games = bundles[changes.bundle];
+                    const bot = activeBots[acc.username];
+                    if (bot && bot.client && bot.status === 'Running') updateBotGames(acc.username);
                 }
             }
 
@@ -194,7 +201,9 @@ app.get('/api/accounts', (req, res) => {
             grandTotal: acc.grandTotal || "0.0", steamId: acc.steamId || null, games: (acc.games||[]).map(id => ({ id, name: getGameName(id) })), 
             customStatus: acc.customStatus || "", addedAt: acc.addedAt || Date.now(), boostedHours: acc.boostedHours || 0, 
             personaState: acc.personaState !== undefined ? acc.personaState : 1, category: acc.category || "Default", autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept, ip: displayIp,
-            proxy: acc.proxy || ""
+            proxy: acc.proxy || "",
+            ownedGames: (acc.ownedGames || []).map(g => g.id),
+            hasSharedSecret: !!acc.sharedSecret
         };
     }));
 });
@@ -248,14 +257,54 @@ app.post('/api/games', (req, res) => {
 });
 app.post('/api/games/free_license', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
-    const { usernames, games } = req.body;
+    const { usernames, games, autoStart } = req.body;
     if (!usernames || !Array.isArray(usernames) || !games || !Array.isArray(games)) return res.status(400).json({ error: 'Invalid data' });
     
-    let count = 0;
+    const activeBots = getActiveBots();
+    const processList = [];
+
     usernames.forEach(u => {
-        if (verifyOwner(req, u)) { requestFreeGames(u, games); count++; }
+        if (verifyOwner(req, u)) processList.push(u);
     });
-    res.json({ success: true, count });
+
+    res.json({ success: true, count: processList.length, queued: processList.length, message: "Processing started in background" });
+
+    (async () => {
+        const BATCH_SIZE = 10;
+        const total = processList.length;
+        let processed = 0;
+        let stats = { success: 0, owned: 0, failed: 0, queued: 0 };
+        io.emit('free_games_progress', { processed: 0, total, stats });
+
+        for (let i = 0; i < processList.length; i += BATCH_SIZE) {
+            const batch = processList.slice(i, i + BATCH_SIZE);
+            
+            const promises = batch.map(u => {
+                const bot = activeBots[u];
+                if (bot && bot.client && bot.status === 'Running') { 
+                    return requestFreeGames(u, games); 
+                } else if (autoStart) { 
+                    queueFreeGames(u, games, true); 
+                    startBotProcess(getAccount(u)); 
+                    return Promise.resolve({ result: 'queued' });
+                }
+                return Promise.resolve({ result: 'error', msg: 'Offline' });
+            });
+
+            const results = await Promise.all(promises);
+            results.forEach(r => {
+                if (r.result === 'success') stats.success++;
+                else if (r.result === 'owned') stats.owned++;
+                else if (r.result === 'error') stats.failed++;
+                else if (r.result === 'queued') stats.queued++;
+            });
+
+            processed += batch.length;
+            io.emit('free_games_progress', { processed, total, stats });
+            if (i + BATCH_SIZE < processList.length) await new Promise(r => setTimeout(r, 10000));
+        }
+        io.emit('free_games_progress', { processed: total, total, stats, complete: true });
+    })();
 });
 app.post('/api/delete', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); deleteAccountFile(req.body.username); delete getActiveBots()[req.body.username]; res.json({ success: true }); });
 app.post('/api/get_account', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ username: acc.username, sharedSecret: acc.sharedSecret || '', proxy: acc.proxy || '', category: acc.category || '', autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept }); });
@@ -329,17 +378,24 @@ app.post('/api/proxy/check', (req, res) => {
             options.headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(u.username + ':' + u.password).toString('base64');
         }
 
+        let responded = false;
+        const safeReply = (data) => {
+            if (responded) return;
+            responded = true;
+            res.json(data);
+        };
+
         const request = http.request(options, (response) => {
             if (response.statusCode === 200) {
                 response.resume(); // Consume data stream
-                res.json({ success: true, ip: "Steam Reachable" });
+                safeReply({ success: true, ip: "Steam Reachable" });
             } else {
-                res.json({ success: false, msg: `HTTP ${response.statusCode}` });
+                safeReply({ success: false, msg: `HTTP ${response.statusCode}` });
             }
         });
 
-        request.on('error', (err) => res.json({ success: false, msg: "Connection Failed" }));
-        request.on('timeout', () => { request.destroy(); res.json({ success: false, msg: "Timeout" }); });
+        request.on('error', (err) => safeReply({ success: false, msg: "Connection Failed" }));
+        request.on('timeout', () => { request.destroy(); safeReply({ success: false, msg: "Timeout" }); });
         request.end();
     } catch (e) {
         res.json({ success: false, msg: "Invalid Format" });

@@ -69,7 +69,7 @@ function getBundles() { return bundles; }
 function saveBundles(b) { bundles = b; fs.writeFileSync(BUNDLES_FILE, JSON.stringify(bundles, null, 2)); }
 
 // --- SETTINGS ---
-let globalSettings = { discordWebhook: "" };
+let globalSettings = { discordWebhook: "", rotationInterval: 60 };
 if (fs.existsSync(SETTINGS_FILE)) { try { globalSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE)); } catch(e){} }
 
 function getSettings() { return globalSettings; }
