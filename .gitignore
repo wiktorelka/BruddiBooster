@@ -6,3 +6,5 @@ sessions.json
 config.json
 package-lock.json
 settings.json
+database.db
+*.db
