@@ -9,7 +9,7 @@ const http = require('http');
 
 const { log, getLogs, clearLogs, encrypt, decrypt } = require('./utils');
 const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies } = require('./data');
-const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames } = require('./bot');
+const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames } = require('./bot');
 
 const app = express();
 const server = http.createServer(app);
@@ -160,9 +160,6 @@ app.post('/api/accounts/bulk_update', (req, res) => {
                     setTimeout(() => startBotProcess(acc), 1000);
                 }
             }
-            
-            // Bulk Profile (Avatar, Privacy) - Only works if bot is running
-            if (changes.avatar || changes.privacy) { try { updateProfile(acc.username, { avatar: changes.avatar, privacy: changes.privacy }); } catch(e){} }
             
             count++;
         }

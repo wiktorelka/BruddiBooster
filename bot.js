@@ -1,5 +1,4 @@
 const SteamUser = require('steam-user');
-const SteamCommunity = require('steamcommunity');
 const SteamTotp = require('steam-totp');
 const https = require('https');
 const { log } = require('./utils');
@@ -8,18 +7,26 @@ const { getAllAccounts, getAccount, saveAccount, getSettings, getGlobalProxies }
 const activeBots = {}; 
 const pendingFreeGames = {};
 let allSteamApps = [];
+let steamAppsMap = {};
 const TOP_GAMES_FALLBACK = { 730: "Counter-Strike 2", 440: "Team Fortress 2", 570: "Dota 2", 252490: "Rust", 271590: "GTA V" };
 
 function updateAppList() {
     https.get('https://raw.githubusercontent.com/jsnli/steamappidlist/refs/heads/master/data/games_appid.json', (res) => {
         if (res.statusCode !== 200) return;
         let data = ''; res.on('data', c => data += c);
-        res.on('end', () => { try { allSteamApps = JSON.parse(data); log(`Loaded ${allSteamApps.length} games.`, "SUCCESS"); } catch(e){} });
+        res.on('end', () => { 
+            try { 
+                allSteamApps = JSON.parse(data); 
+                steamAppsMap = {};
+                allSteamApps.forEach(a => steamAppsMap[a.appid] = a);
+                log(`Loaded ${allSteamApps.length} games.`, "SUCCESS"); 
+            } catch(e){} 
+        });
     }).on('error', () => {});
 }
 updateAppList(); setInterval(updateAppList, 86400000); 
 
-function getGameName(id) { const f = allSteamApps.find(a => a.appid == id); return f ? f.name : (TOP_GAMES_FALLBACK[id] || "Unknown Game"); }
+function getGameName(id) { const f = steamAppsMap[id]; return f ? f.name : (TOP_GAMES_FALLBACK[id] || "Unknown Game"); }
 
 function searchGames(q) {
     return allSteamApps.filter(a => a.name && a.name.toLowerCase().includes(q)).sort((a, b) => a.name.length - b.name.length).slice(0, 20);
@@ -34,14 +41,15 @@ function getGamePayload(games, customStatus) {
 
 function updateHours(username, client) {
     const delay = Math.floor(Math.random() * 45000) + 15000;
-    setTimeout(() => { if (!activeBots[username] || !activeBots[username].client) return; client.getUserOwnedApps(client.steamID, { includePlayedFreeGames: true, includeInfo: true }, (err, res) => { if (res && res.apps) { let m = 0; const owned = res.apps.map(a => ({ id: a.appid, name: a.name })); res.apps.forEach(a => m += a.playtime_forever); const acc = getAccount(username); if (acc) { acc.grandTotal = (m / 60).toFixed(1); acc.ownedGames = owned; saveAccount(acc); } } }); }, delay);
+    setTimeout(() => { if (!activeBots[username] || activeBots[username].client !== client) return; client.getUserOwnedApps(client.steamID, { includePlayedFreeGames: true, includeInfo: true }, (err, res) => { if (res && res.apps) { let m = 0; const owned = res.apps.map(a => ({ id: a.appid, name: a.name })); res.apps.forEach(a => m += a.playtime_forever); const acc = getAccount(username); if (acc) { acc.grandTotal = (m / 60).toFixed(1); acc.ownedGames = owned; saveAccount(acc); } } }); }, delay);
 }
 
 function checkAndEnsureGames(username, client, retryCount = 0) {
     return new Promise((resolve) => {
         setTimeout(() => {
+            if (!activeBots[username] || activeBots[username].client !== client) return resolve(false);
             const acc = getAccount(username);
-            if (!acc || !acc.games || acc.games.length === 0) return resolve();
+            if (!acc || !acc.games || acc.games.length === 0) return resolve(false);
 
             let missing = [];
             try {
@@ -52,30 +60,39 @@ function checkAndEnsureGames(username, client, retryCount = 0) {
                     return setTimeout(() => checkAndEnsureGames(username, client, retryCount + 1).then(resolve), 5000);
                 }
                 log(`${username} PICS cache not ready, skipping game check.`, "WARN", username);
-                return resolve();
+                return resolve(false);
             }
 
-            if (missing.length === 0) return resolve();
+            if (missing.length === 0) return resolve(false);
 
             log(`${username} missing ${missing.length} games. Attempting to request free licenses...`, "BOT", username);
             
             client.requestFreeLicense(missing, (err, granted, grantedIds) => {
+                if (err) {
+                    log(`${username} failed to request free games: ${err.message}`, "WARN", username);
+                    return resolve(false);
+                }
+                
+                let changed = false;
                 const actuallyGranted = grantedIds || [];
                 const stillMissing = missing.filter(id => !actuallyGranted.includes(id));
                 
                 if (stillMissing.length > 0) {
                     const missingNames = stillMissing.map(id => getGameName(id)).join(', ');
-                    const msg = `Missing games: ${missingNames} (Possible Region Lock)`;
+                    const msg = `Removed ${stillMissing.length} unaddable games (Paid/Region Lock): ${missingNames}`;
                     log(`${username}: ${msg}`, "WARN", username);
                     if (activeBots[username]) activeBots[username].lastError = msg;
-                    sendDiscordWebhook("Missing Games", `Account **${username}** cannot farm: ${missingNames}`, 16776960);
+                    acc.games = acc.games.filter(id => !stillMissing.includes(id));
+                    saveAccount(acc);
+                    changed = true;
                 }
                 
                 if (actuallyGranted.length > 0) {
                     log(`${username} added ${actuallyGranted.length} free games.`, "SUCCESS", username);
                     updateHours(username, client);
+                    changed = true;
                 }
-                resolve();
+                resolve(changed);
             });
         }, Math.floor(Math.random() * 5000) + 2000);
     });
@@ -123,6 +140,8 @@ function handleCrash(username, msg) {
             try { bot.client.logOff(); } catch(e){}
             bot.client = null;
         }
+        if (bot.rotationInterval) { clearInterval(bot.rotationInterval); bot.rotationInterval = null; }
+        if (bot.crashTimeout) { clearTimeout(bot.crashTimeout); bot.crashTimeout = null; }
 
         setTimeout(() => {
             const acc = getAccount(username);
@@ -141,8 +160,8 @@ function handleCrash(username, msg) {
             try { bot.client.logOff(); } catch(e){}
             bot.client = null;
         }
-        if (bot.rotationInterval) clearInterval(bot.rotationInterval);
-        if (bot.crashTimeout) clearTimeout(bot.crashTimeout);
+        if (bot.rotationInterval) { clearInterval(bot.rotationInterval); bot.rotationInterval = null; }
+        if (bot.crashTimeout) { clearTimeout(bot.crashTimeout); bot.crashTimeout = null; }
     }
 }
 
@@ -174,6 +193,7 @@ function startBotProcess(account) {
     const client = new SteamUser(clientOptions);
     activeBots[username].client = client;
     activeBots[username].status = 'Logging in...';
+    activeBots[username].loginStartTime = Date.now();
     log(`Starting ${username}...`, "BOT", username);
 
     const opts = { accountName: username, password: password };
@@ -192,14 +212,6 @@ function startBotProcess(account) {
 
     client.logOn(opts);
 
-    client.on('webSession', (sessionID, cookies) => {
-        if (activeBots[username]) {
-            activeBots[username].community = new SteamCommunity();
-            activeBots[username].community.setCookies(cookies);
-            fetchProfileDetails(username);
-        }
-    });
-
     client.on('loggedOn', () => {
         const state = account.personaState !== undefined ? account.personaState : SteamUser.EPersonaState.Online;
         client.setPersona(state);
@@ -212,9 +224,12 @@ function startBotProcess(account) {
         if (pendingFreeGames[username] && pendingFreeGames[username].autoStop) {
             log(`${username} login for Free Games task (No Farming).`, "BOT", username);
         } else {
+            // Instantly start playing games + show custom status on Steam
+            updateBotGames(username);
+
             const initGames = () => {
-                checkAndEnsureGames(username, client).then(() => {
-                    updateBotGames(username); // Initialize games/rotation
+                checkAndEnsureGames(username, client).then((changed) => {
+                    if (changed) updateBotGames(username); // Re-initialize games/rotation if games were removed or added
                 });
             };
 
@@ -222,7 +237,14 @@ function startBotProcess(account) {
                 initGames();
             } else {
                 client.once('appOwnershipCached', initGames);
-                setTimeout(() => { if (client.listenerCount('appOwnershipCached') > 0) { client.removeListener('appOwnershipCached', initGames); initGames(); } }, 60000);
+                setTimeout(() => { 
+                    if (activeBots[username] && activeBots[username].client === client) {
+                        if (client.listenerCount('appOwnershipCached') > 0) { 
+                            client.removeListener('appOwnershipCached', initGames); 
+                            initGames(); 
+                        } 
+                    }
+                }, 60000);
             }
         }
 
@@ -242,7 +264,15 @@ function startBotProcess(account) {
 
         if (client.steamID) { account.steamId = client.steamID.getSteamID64(); saveAccount(account); }
         
-        client.getPersonas([client.steamID], () => { setTimeout(() => { if (!client.steamID) return; const u = client.users[client.steamID.getSteamID64()]; if (u) { if(u.player_name) account.nickname = u.player_name; if(u.avatar_hash) account.avatarHash = u.avatar_hash.toString('hex'); saveAccount(account); } }, 1000); });
+        const currentSteamID = client.steamID;
+        client.getPersonas([currentSteamID], () => { 
+            setTimeout(() => { 
+                if (activeBots[username] && activeBots[username].client === client) { 
+                    const u = client.users[currentSteamID.getSteamID64()]; 
+                    if (u) { if(u.player_name) account.nickname = u.player_name; if(u.avatar_hash) account.avatarHash = u.avatar_hash.toString('hex'); saveAccount(account); } 
+                } 
+            }, 1000); 
+        });
     });
 
     client.on('steamGuard', (d, cb) => { 
@@ -259,11 +289,12 @@ function startBotProcess(account) {
 
         if (e.eresult === 43) {
             log(`${username} Error 43 (VACCheckTimedOut). Disabling account to prevent loop.`, "ERROR", username);
-            activeBots[username].status = 'Disabled (Error 43)';
-            activeBots[username].lastError = 'Steam Error 43: Account disabled.';
             sendDiscordWebhook("Account Disabled", `Account **${username}** encountered Error 43 and has been disabled.`, 15158332);
-            
-            if(activeBots[username].client) { try { activeBots[username].client.logOff(); } catch(e){} activeBots[username].client = null; }
+            stopBot(username);
+            if (activeBots[username]) {
+                activeBots[username].status = 'Disabled (Error 43)';
+                activeBots[username].lastError = 'Steam Error 43: Account disabled.';
+            }
             
             const acc = getAccount(username);
             if (acc) {
@@ -274,10 +305,12 @@ function startBotProcess(account) {
         }
 
         if (e.eresult === 84) {
-            activeBots[username].status = 'Rate Limit (5m)';
-            activeBots[username].lastError = 'Steam Rate Limit (IP/Account). Cooldown active.';
             sendDiscordWebhook("Rate Limit Hit", `Account **${username}** has been rate limited by Steam. Cooldown active for 5 minutes.`, 15158332);
-            if(activeBots[username].client) { activeBots[username].client.logOff(); activeBots[username].client = null; }
+            stopBot(username);
+            if (activeBots[username]) {
+                activeBots[username].status = 'Rate Limit (5m)';
+                activeBots[username].lastError = 'Steam Rate Limit (IP/Account). Cooldown active.';
+            }
             setTimeout(() => {
                 if (activeBots[username] && activeBots[username].status === 'Rate Limit (5m)') {
                     const acc = getAccount(username);
@@ -312,12 +345,8 @@ function updateBotGames(username) {
 
     let gamesToFarm = acc.games || [];
     try {
-        if (bot.client.picsCache && bot.client.picsCache.apps) {
-            const owned = gamesToFarm.filter(id => bot.client.ownsApp(id));
-            if (owned.length < gamesToFarm.length) {
-                 log(`${username}: Filtering ${gamesToFarm.length - owned.length} unowned games from rotation.`, "BOT", username);
-            }
-            gamesToFarm = owned;
+        if (bot.client.picsCache && bot.client.picsCache.apps && Object.keys(bot.client.picsCache.apps).length > 0) {
+            gamesToFarm = gamesToFarm.filter(id => bot.client.ownsApp(id));
         }
     } catch(e) {}
 
@@ -356,94 +385,7 @@ function updateBotGames(username) {
     if (acc.personaState !== undefined) bot.client.setPersona(acc.personaState);
 }
 
-function fetchProfileDetails(username) {
-    const bot = activeBots[username];
-    if (!bot || !bot.community) return;
-
-    // Fetch Profile Info (Real Name, Custom URL)
-    bot.community.httpRequestGet('https://steamcommunity.com/my/edit/info', (err, response, body) => {
-        if (err || !body) return;
-        const acc = getAccount(username);
-        if (!acc) return;
-
-        const realNameMatch = body.match(/name="real_name"[^>]*value="([^"]*)"/);
-        if (realNameMatch) acc.realName = realNameMatch[1];
-        
-        const customUrlMatch = body.match(/name="customURL"[^>]*value="([^"]*)"/);
-        if (customUrlMatch) acc.customURL = customUrlMatch[1];
-
-        saveAccount(acc);
-    });
-
-    // Fetch Privacy Settings
-    bot.community.httpRequestGet('https://steamcommunity.com/my/edit/settings', (err, response, body) => {
-        if (err || !body) return;
-        const acc = getAccount(username);
-        if (!acc) return;
-        
-        acc.privacy = acc.privacy || {};
-        const findPrivacy = (name) => { const m = body.match(new RegExp(`name="${name}"[^>]*value="(\\d+)"[^>]*checked`)); return m ? parseInt(m[1]) : null; };
-
-        const p = findPrivacy('privacySetting\\[privacyProfile\\]'); if(p) acc.privacy.profile = p;
-        const i = findPrivacy('privacySetting\\[privacyInventory\\]'); if(i) acc.privacy.inventory = i;
-        const g = findPrivacy('privacySetting\\[privacyOwnedGames\\]'); if(g) acc.privacy.ownedGames = g;
-        saveAccount(acc);
-    });
-}
-
-function updateProfile(username, { nickname, avatar, realName, customURL, privacy }) {
-    const bot = activeBots[username];
-    if (!bot || !bot.client || bot.status !== 'Running') {
-        throw new Error("Bot must be running to edit profile");
-    }
-    
-    const community = bot.community;
-    const acc = getAccount(username);
-    
-    if (nickname && nickname !== acc.nickname) {
-        bot.client.setPersona(acc.personaState || 1, nickname);
-        acc.nickname = nickname;
-        saveAccount(acc);
-        log(`${username} changed nickname to ${nickname}`, "PROFILE", username);
-    }
-    
-    if (avatar) {
-        const matches = avatar.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        if (matches && matches.length === 3) {
-            const buffer = Buffer.from(matches[2], 'base64');
-            bot.client.uploadAvatar(buffer, (err) => {
-                if (err) log(`${username} avatar upload failed: ${err.message}`, "ERROR", username);
-                else log(`${username} avatar updated`, "PROFILE", username);
-            });
-        }
-    }
-
-    if (community) {
-        if (realName || customURL) {
-            const settings = {};
-            if (realName !== undefined) { settings.realName = realName; acc.realName = realName; }
-            if (customURL !== undefined) { settings.customURL = customURL; acc.customURL = customURL; }
-            
-            community.editProfile(settings, (err) => { 
-                if(err) log(`${username} profile edit failed: ${err.message}`, "ERROR", username); 
-                else { log(`${username} profile details updated`, "PROFILE", username); saveAccount(acc); }
-            });
-        }
-        if (privacy && (privacy.profile || privacy.inventory || privacy.ownedGames)) {
-            const pSettings = {};
-            if (privacy.profile) { pSettings.privacyProfile = parseInt(privacy.profile); acc.privacy = acc.privacy || {}; acc.privacy.profile = pSettings.privacyProfile; }
-            if (privacy.inventory) { pSettings.privacyInventory = parseInt(privacy.inventory); acc.privacy = acc.privacy || {}; acc.privacy.inventory = pSettings.privacyInventory; }
-            if (privacy.ownedGames) { pSettings.privacyOwnedGames = parseInt(privacy.ownedGames); acc.privacy = acc.privacy || {}; acc.privacy.ownedGames = pSettings.privacyOwnedGames; }
-            
-            community.profileSettings(pSettings, (err) => { 
-                if(err) log(`${username} privacy update failed: ${err.message}`, "ERROR", username); 
-                else { log(`${username} privacy settings updated`, "PROFILE", username); saveAccount(acc); }
-            });
-        }
-    }
-}
-
-function stopBot(u) { const b = activeBots[u]; if (b) { if (b.rotationInterval) { clearInterval(b.rotationInterval); b.rotationInterval = null; } if (b.crashTimeout) { clearTimeout(b.crashTimeout); b.crashTimeout = null; } b.nextRotation = null; if (b.client) { b.client.logOff(); b.client = null; log(`${u} stopped.`, "BOT", u); } b.status = 'Stopped'; b.guardCallback = null; b.lastError = null; } }
+function stopBot(u) { const b = activeBots[u]; if (b) { if (b.rotationInterval) { clearInterval(b.rotationInterval); b.rotationInterval = null; } if (b.crashTimeout) { clearTimeout(b.crashTimeout); b.crashTimeout = null; } b.nextRotation = null; if (b.client) { b.client.removeAllListeners(); try { b.client.logOff(); } catch(e){} b.client = null; log(`${u} stopped.`, "BOT", u); } b.status = 'Stopped'; b.guardCallback = null; b.lastError = null; } }
 
 function getActiveBots() { return activeBots; }
 
@@ -458,6 +400,10 @@ setInterval(() => {
             delete activeBots[u];
             log(`Stopped ${u} (File removed)`, "SYSTEM", u);
         }
+    });
+    
+    Object.keys(pendingFreeGames).forEach(u => {
+        if (!currentUsers.includes(u)) delete pendingFreeGames[u];
     });
 
     accounts.forEach(acc => {
@@ -474,18 +420,18 @@ setInterval(() => {
     const accounts = getAllAccounts();
     accounts.forEach(acc => {
         const bot = activeBots[acc.username];
-        if (bot && bot.status === 'Running') {
-            if (!bot.client || !bot.client.steamID) {
+        if (bot) {
+            if (bot.status === 'Running' && (!bot.client || !bot.client.steamID)) {
                  log(`${acc.username} watchdog: Bot offline. Restarting...`, "WATCHDOG", acc.username);
                  bot.status = 'Restarting...';
-                 if(bot.client) { try { bot.client.logOff(); } catch(e){} bot.client = null; }
+                 if(bot.client) { bot.client.removeAllListeners(); try { bot.client.logOff(); } catch(e){} bot.client = null; }
                  sendDiscordWebhook("Watchdog Restart", `Bot **${acc.username}** detected offline. Restarting...`, 15105570);
                  setTimeout(() => startBotProcess(acc), 5000);
-            } else {
-                // Refresh game session to ensure online status
-                // We don't force gamesPlayed here anymore to avoid resetting rotation timer logic, 
-                // but if we wanted to be safe we could check if rotation is active.
-                // For now, relying on the rotation interval or the initial set is fine.
+            } else if (bot.status === 'Logging in...' && bot.loginStartTime && (Date.now() - bot.loginStartTime > 300000)) {
+                 log(`${acc.username} watchdog: Stuck at Logging in (Dead Proxy?). Restarting...`, "WATCHDOG", acc.username);
+                 bot.status = 'Restarting...';
+                 if(bot.client) { bot.client.removeAllListeners(); try { bot.client.logOff(); } catch(e){} bot.client = null; }
+                 setTimeout(() => startBotProcess(acc), 5000);
             }
         }
     });
@@ -498,6 +444,7 @@ function requestFreeGames(username, gameIds, autoStop = false, retryCount = 0) {
             log(`${username} cannot add free games: Bot not running.`, "WARN", username);
             return resolve({ result: 'error', msg: 'Bot not running' });
         }
+        const currentClient = bot.client;
         
         bot.client.requestFreeLicense(gameIds, (err, grantedPackages, grantedAppIDs) => {
             if (err) {
@@ -510,7 +457,7 @@ function requestFreeGames(username, gameIds, autoStop = false, retryCount = 0) {
             } else {
                 // Verify ownership after a short delay
                 setTimeout(() => {
-                    if (!bot.client) return resolve({ result: 'error', msg: 'Bot disconnected during verification' });
+                    if (!activeBots[username] || activeBots[username].client !== currentClient) return resolve({ result: 'error', msg: 'Bot disconnected' });
                     
                     let missing = [];
                     try {
@@ -574,4 +521,4 @@ function queueFreeGames(username, games, autoStop = false) {
     pendingFreeGames[username] = { games, autoStop };
 }
 
-module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, updateProfile, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames };
+module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames };

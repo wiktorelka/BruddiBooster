@@ -11,6 +11,23 @@ const PROXIES_FILE = path.join(__dirname, 'proxies.json');
 
 if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR);
 
+let accountsCache = {};
+let accountsLoaded = false;
+
+function loadAllAccounts() {
+    if (!fs.existsSync(ACCOUNTS_DIR)) return;
+    const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json'));
+    files.forEach(file => {
+        try {
+            const r = JSON.parse(fs.readFileSync(path.join(ACCOUNTS_DIR, file), 'utf8'));
+            if (r && r.username) {
+                accountsCache[r.username.toLowerCase()] = { ...r, password: decrypt(r.password), sharedSecret: decrypt(r.sharedSecret) };
+            }
+        } catch(e) {}
+    });
+    accountsLoaded = true;
+}
+
 // --- USERS ---
 let panelUsers = [];
 if (fs.existsSync(USERS_FILE)) {
@@ -28,27 +45,32 @@ function saveUsers(users) { panelUsers = users; fs.writeFileSync(USERS_FILE, JSO
 
 // --- ACCOUNTS ---
 function getAllAccounts() {
-    return fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json')).map(file => {
-        try { const r = JSON.parse(fs.readFileSync(path.join(ACCOUNTS_DIR, file))); return { ...r, password: decrypt(r.password), sharedSecret: decrypt(r.sharedSecret) }; } catch(e) { return null; }
-    }).filter(a => a);
+    if (!accountsLoaded) loadAllAccounts();
+    return Object.values(accountsCache);
 }
 
 function getAccount(username) {
-    try {
-        const p = path.join(ACCOUNTS_DIR, username.toLowerCase() + '.json');
-        if (!fs.existsSync(p)) return null;
-        const r = JSON.parse(fs.readFileSync(p));
-        return { ...r, password: decrypt(r.password), sharedSecret: decrypt(r.sharedSecret) };
-    } catch (e) { return null; }
+    if (!accountsLoaded) loadAllAccounts();
+    return accountsCache[username.toLowerCase()] || null;
 }
 
 function saveAccount(acc) {
+    if (!accountsLoaded) loadAllAccounts();
     if (!acc.category || acc.category.trim() === "") acc.category = "Default";
+    accountsCache[acc.username.toLowerCase()] = acc;
     const d = { ...acc, password: encrypt(acc.password), sharedSecret: encrypt(acc.sharedSecret) };
-    fs.writeFileSync(path.join(ACCOUNTS_DIR, acc.username.toLowerCase() + '.json'), JSON.stringify(d, null, 2));
+    try {
+        fs.writeFileSync(path.join(ACCOUNTS_DIR, acc.username.toLowerCase() + '.json'), JSON.stringify(d, null, 2));
+    } catch(e) {}
 }
 
-function deleteAccountFile(user) { const p = path.join(ACCOUNTS_DIR, user.toLowerCase() + '.json'); if (fs.existsSync(p)) fs.unlinkSync(p); }
+function deleteAccountFile(user) {
+    if (!accountsLoaded) loadAllAccounts();
+    const lower = user.toLowerCase();
+    delete accountsCache[lower];
+    const p = path.join(ACCOUNTS_DIR, lower + '.json'); 
+    if (fs.existsSync(p)) fs.unlinkSync(p); 
+}
 
 // --- SESSIONS ---
 let sessions = {};
@@ -83,4 +105,9 @@ if (fs.existsSync(PROXIES_FILE)) { try { globalProxies = JSON.parse(fs.readFileS
 function getGlobalProxies() { return globalProxies; }
 function saveGlobalProxies(p) { globalProxies = p; fs.writeFileSync(PROXIES_FILE, JSON.stringify(globalProxies, null, 2)); }
 
-module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies };
+function getAccountUsernames() {
+    if (!accountsLoaded) loadAllAccounts();
+    return Object.keys(accountsCache);
+}
+
+module.exports = { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies, getAccountUsernames };

@@ -4,7 +4,7 @@
 ![Dev Time](https://img.shields.io/badge/Dev%20Time-Few%20Hours-success?style=for-the-badge)
 ![Security](https://img.shields.io/badge/Security-AES--256--CBC-red?style=for-the-badge&logo=auth0)
 
-**A self-hosted, web-based Steam Hour Booster with 2FA protection, bulk account management, and military-grade encryption for your data.**
+**A highly optimized, self-hosted Steam Hour Booster with 2FA protection, bulk account management, smart game rotation, and military-grade encryption.**
 
 ---
 
@@ -34,7 +34,7 @@
 
 This entire application—from the backend server logic to the frontend design and security implementation—was generated **100% by Google's Gemini AI** in just a few hours.
 
-**Note:** I am by no means a professional developer. I had the idea, and AI did the heavy lifting. While the code is functional and tested, I will do my best to maintain and improve it as I learn.
+**Note:** I am by no means a professional developer. I had the idea, and AI did the heavy lifting. The codebase has been heavily optimized to prevent memory leaks, reduce CPU usage via O(1) hash mapping, and handle disk reads safely through in-memory caching.
 
 If you encounter any bugs or have feature suggestions, please feel free to **open an issue** in the [Issues tab](../../issues).
 
@@ -54,13 +54,14 @@ Your data security is the top priority of this project.
 
 * **Secure Dashboard:** Web interface protected by Login + Google Authenticator (2FA).
 * **Account Management:** Add, Edit, and Delete Steam accounts easily.
-* **Bulk Import & Edit:** Add multiple accounts at once and mass-edit settings like proxies, avatars, or privacy.
+* **Bulk Import & Edit:** Add multiple accounts at once and mass-edit settings like proxies and categories.
 * **Proxy Manager:** Assign individual proxies to accounts to prevent IP bans, with a built-in proxy checker.
 * **Game Bundles & Rotation:** Create game presets and idle more than 32 games by automatically rotating them every hour.
-* **Profile Editor:** Change your Avatar, Nickname, Real Name, Custom URL, and Privacy Settings directly from the dashboard.
 * **Discord Notifications:** Get notified via Webhook when an account needs a Steam Guard code, hits a rate limit, or disconnects.
 * **Auto-Accept Friends:** Optional setting to automatically accept incoming friend requests.
 * **My Library Selector:** Automatically fetches your owned games for easy selection—no need to look up App IDs manually.
+* **Smart Watchdog:** Automatically detects offline accounts or dead proxies (stuck on logging in) and attempts safe restarts.
+* **Auto-Game Cleanup:** Automatically detects region-locked or paid games failing to add via free licenses and safely removes them to prevent infinite loops.
 * **Auto-Start:** Configurable option to automatically start specific accounts when the server boots.
 * **Panic Button:** Emergency switch to stop all bots immediately.
 * **Smart Logging:** Detailed error reporting (e.g., Incorrect Password, Steam Guard required) saved directly to the dashboard with tooltip hints.
@@ -143,7 +144,6 @@ Here are the features planned for future updates of BruddiBooster.
 - [x] **Proxy Support:** Ability to assign individual HTTP/SOCKS5 proxies to accounts to prevent IP bans.
 - [x] **Auto-Accept Friends:** Configurable rules to auto-accept friend requests.
 - [x] **Discord Webhooks:** Send notifications to Discord when an account goes offline or needs a Guard code.
-- [x] **Profile Editor:** Edit profile details and privacy settings.
 - [x] **Game Rotation:** Idle more than 32 games.
 - [ ] **Steam Chat:** View and reply to Steam friends directly from the dashboard.
 - [ ] **Docker Support:** Create a `Dockerfile` for easy one-click deployment.
