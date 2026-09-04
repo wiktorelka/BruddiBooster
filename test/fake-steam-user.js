@@ -26,7 +26,11 @@ class FakeSteamUser extends EventEmitter {
 
     // --- surface used by bot.js ---
 
-    logOn() {
+    // Mirrors steam-user: a refresh token logs in without accountName/password.
+    get usedRefreshToken() { return !!(this._logOnOpts && this._logOnOpts.refreshToken); }
+
+    logOn(opts) {
+        this._logOnOpts = opts || {};
         this._logOnCalled = true;
         // steam-user keeps retrying the connection on a self-referencing timer
         // (_reconnectForCloseDuringAuthTimeout -> _doConnection). That closure is
@@ -56,8 +60,9 @@ class FakeSteamUser extends EventEmitter {
         this._reconnectTimer = null;
     }
 
-    setPersona() {}
-    gamesPlayed(payload) { this._playing = payload; }
+    setPersona(state) { this._persona = state; this._personaCalled = true; }
+    gamesPlayed(payload, force) { this._playing = payload; this._lastForce = !!force; if (force) this._kicked = true; }
+    kickPlayingSession(cb) { this._kicked = true; if (cb) process.nextTick(() => cb(null, { playingApp: 0 })); }
     ownsApp() { return true; }
     addFriend() {}
 

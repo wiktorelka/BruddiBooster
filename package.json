@@ -4,8 +4,10 @@
   "description": "Steam Hour Booster with 2FA, Bulk Import and Categories",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test:leak": "node --expose-gc test/leak-harness.js"
+    "start": "node --max-old-space-size=3072 server.js",
+    "test": "node test/boost-behaviour.js && node --expose-gc test/leak-harness.js",
+    "test:leak": "node --expose-gc test/leak-harness.js",
+    "test:boost": "node test/boost-behaviour.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -19,6 +19,36 @@ function log(msg, type='INFO', relatedUser=null) {
 }
 
 function getLogs() { return systemLogs; }
+
+// Libraries (express-rate-limit, steam-user, node itself) write straight to
+// console.error/warn, so those never reached the dashboard's log view -- they were
+// only visible to whoever was watching the terminal. Mirror them into the ring buffer.
+let consolePatched = false;
+function captureConsole() {
+    if (consolePatched) return;
+    consolePatched = true;
+    for (const [method, type] of [['error', 'ERROR'], ['warn', 'WARN']]) {
+        const original = console[method].bind(console);
+        console[method] = (...args) => {
+            original(...args);
+            try {
+                const text = args.map(a => {
+                    if (a instanceof Error) return a.stack || a.message;
+                    if (typeof a === 'string') return a;
+                    try { return JSON.stringify(a); } catch (e) { return String(a); }
+                }).join(' ');
+                // Only the first line: stack traces would flood a 1000-entry buffer.
+                const firstLine = text.split('\n')[0].slice(0, 500);
+                if (!firstLine.trim()) return;
+                const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+                const entry = `[${timestamp}] [${type}] ${firstLine}`;
+                systemLogs.unshift({ text: entry, relatedUser: null });
+                if (systemLogs.length > MAX_LOGS) systemLogs.splice(MAX_LOGS);
+                if (logListener) logListener({ text: entry, relatedUser: null });
+            } catch (e) { /* never let logging break the caller */ }
+        };
+    }
+}
 function clearLogs() { systemLogs.length = 0; }
 
 // --- SECURITY ---
@@ -51,4 +81,4 @@ function decrypt(text) {
     } catch (e) { return text; }
 }
 
-module.exports = { log, getLogs, clearLogs, encrypt, decrypt, setLogListener };
+module.exports = { log, getLogs, clearLogs, encrypt, decrypt, setLogListener, captureConsole };

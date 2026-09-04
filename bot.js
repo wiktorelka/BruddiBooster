@@ -7,7 +7,6 @@ const { getAllAccounts, getAccount, saveAccount, getSettings, getGlobalProxies }
 const activeBots = {};
 const pendingFreeGames = {};
 let steamAppsMap = {};
-let steamAppsList = []; // flat, pre-lowercased mirror of steamAppsMap for searching
 const TOP_GAMES_FALLBACK = { 730: "Counter-Strike 2", 440: "Team Fortress 2", 570: "Dota 2", 252490: "Rust", 271590: "GTA V" };
 
 // --- PER-BOT TIMER TRACKING ---
@@ -36,6 +35,8 @@ function destroyClient(bot) {
     if (bot.crashTimeout) { clearTimeout(bot.crashTimeout); bot.crashTimeout = null; }
     clearBotTimers(bot);
     bot.nextRotation = null;
+    bot.ownedApps = null;
+    bot.ownershipReady = false;
 
     const client = bot.client;
     bot.client = null;
@@ -59,6 +60,120 @@ function destroyClient(bot) {
     }
 }
 
+// --- APP OWNERSHIP ---
+// steam-user's ownsApp()/picsCache requires enablePicsCache, which on login pulls
+// full parsed appinfo for every app in every owned package and holds it in memory.
+// On an account with a large library (this tool mass-adds free licenses, so they
+// only grow) that is gigabytes and OOMs the process. getUserOwnedApps gives us the
+// same ownership answer for a few hundred KB, so we keep our own appid Set.
+function refreshOwnedApps(username, client) {
+    return new Promise((resolve) => {
+        const bot = activeBots[username];
+        if (!bot || bot.client !== client || !client.steamID) return resolve(null);
+        client.getUserOwnedApps(client.steamID, { includePlayedFreeGames: true, includeInfo: true }, (err, res) => {
+            const b = activeBots[username];
+            if (err || !res || !res.apps || !b || b.client !== client) return resolve(null);
+            b.ownedApps = new Set(res.apps.map(a => a.appid));
+            b.ownershipReady = true;
+
+            // Same call previously powered updateHours; do the bookkeeping here so we
+            // only ask Steam once.
+            let minutes = 0;
+            const owned = res.apps.map(a => ({ id: a.appid, name: a.name }));
+            res.apps.forEach(a => minutes += (a.playtime_forever || 0));
+            const acc = getAccount(username);
+            if (acc) {
+                const total = minutes / 60;
+                acc.grandTotal = total.toFixed(1);
+                acc.ownedGames = owned;
+
+                // boostedHours used to be a guess (games.length/60 per minute of
+                // uptime) that counted hours Steam may never have credited. Derive it
+                // from Steam's own playtime instead: hours gained since we first saw
+                // this account. On first sight we back-date the baseline so the number
+                // already on screen is preserved rather than resetting to zero.
+                if (acc.baselineHours === undefined) {
+                    acc.baselineHours = Math.max(0, total - (acc.boostedHours || 0));
+                }
+                acc.boostedHours = Math.max(0, total - acc.baselineHours);
+                recordDailyHours(acc);
+
+                saveAccount(acc);
+            }
+            resolve(res.apps);
+        });
+    });
+}
+
+// Returns true/false, or null when ownership isn't known yet (caller should wait).
+function botOwnsApp(bot, appid) {
+    if (!bot || !bot.ownershipReady || !bot.ownedApps) return null;
+    return bot.ownedApps.has(Number(appid));
+}
+
+// --- SCHEDULING ---
+// An account can be restricted to a daily window (e.g. 22:00-06:00). Windows may wrap
+// past midnight. Empty/absent schedule means "always on", which is the default so
+// existing accounts are unaffected.
+function parseHHMM(v) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || '').trim());
+    if (!m) return null;
+    const h = +m[1], min = +m[2];
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+}
+
+function isWithinSchedule(acc, now = new Date()) {
+    if (!acc || !acc.scheduleEnabled) return true;
+    const start = parseHHMM(acc.scheduleStart);
+    const end = parseHHMM(acc.scheduleEnd);
+    if (start === null || end === null || start === end) return true; // malformed = always on
+    const mins = now.getHours() * 60 + now.getMinutes();
+    // A window that wraps midnight is "outside the inverted range".
+    return start < end ? (mins >= start && mins < end) : (mins >= start || mins < end);
+}
+
+// Runs every minute: start accounts entering their window, stop those leaving it.
+function enforceSchedules() {
+    getAllAccounts().forEach(acc => {
+        if (!acc.scheduleEnabled) return;
+        const bot = activeBots[acc.username];
+        const inside = isWithinSchedule(acc);
+        const running = bot && bot.client;
+
+        if (inside && !running && acc.autoStart && bot?.status !== 'Crashed') {
+            log(`${acc.username}: entering scheduled window, starting.`, "SCHEDULE", acc.username);
+            startBotProcess(acc);
+        } else if (!inside && running) {
+            log(`${acc.username}: outside scheduled window, stopping.`, "SCHEDULE", acc.username);
+            stopBot(acc.username);
+            if (activeBots[acc.username]) activeBots[acc.username].status = 'Off schedule';
+        }
+    });
+}
+
+// --- HOURS HISTORY ---
+// grandTotal is a single cumulative number, which makes trends invisible. Keep one
+// datapoint per account per day, capped, so the UI can draw a real chart.
+const HISTORY_DAYS = 90;
+function recordDailyHours(acc) {
+    if (!acc) return;
+    const day = new Date().toISOString().slice(0, 10);
+    if (!Array.isArray(acc.history)) acc.history = [];
+    const total = parseFloat(acc.grandTotal) || 0;
+    const last = acc.history[acc.history.length - 1];
+    if (last && last.d === day) { last.h = total; return; }
+    acc.history.push({ d: day, h: total });
+    if (acc.history.length > HISTORY_DAYS) acc.history.splice(0, acc.history.length - HISTORY_DAYS);
+}
+
+// Refresh tokens expire and are invalidated by a password change; drop ours so the
+// next attempt falls back to the password.
+function clearRefreshToken(username) {
+    const acc = getAccount(username);
+    if (acc && acc.refreshToken) { acc.refreshToken = null; saveAccount(acc); }
+}
+
 // Bumped on every start. A restart scheduled against an older epoch has been
 // superseded and must not create a second client for the same account.
 function currentEpoch(username) {
@@ -73,14 +188,13 @@ function updateAppList() {
         res.on('end', () => {
             try {
                 const parsed = JSON.parse(data);
+                // Store only {name} keyed by appid, not the raw upstream objects, and
+                // no second lowercased copy: the full list is ~185k entries and every
+                // extra field costs tens of MB of permanently resident heap.
                 const newMap = {};
-                const newList = [];
-                parsed.forEach(a => {
-                    newMap[a.appid] = a;
-                    if (a.name) newList.push({ appid: a.appid, name: a.name, lower: a.name.toLowerCase() });
-                });
+                parsed.forEach(a => { if (a.name) newMap[a.appid] = a.name; });
                 steamAppsMap = newMap; // atomic swap — never partially empty
-                steamAppsList = newList;
+                searchCache.q = null;
                 log(`Loaded ${parsed.length} games.`, "SUCCESS");
             } catch(e){}
         });
@@ -88,18 +202,23 @@ function updateAppList() {
 }
 updateAppList(); setInterval(updateAppList, 86400000);
 
-function getGameName(id) { const f = steamAppsMap[id]; return f ? f.name : (TOP_GAMES_FALLBACK[id] || "Unknown Game"); }
+function getGameName(id) { return steamAppsMap[id] || TOP_GAMES_FALLBACK[id] || "Unknown Game"; }
 
-// Scans the prebuilt list instead of rebuilding a ~100k-entry array per keystroke.
-// Shortest name wins, so we only need to keep the best 20 seen so far.
+// Walks the map in place rather than materialising Object.values() (a ~185k-element
+// array) on every keystroke. One-entry cache because the dashboard's debounced search
+// re-sends the same query as the user pauses.
+const searchCache = { q: null, result: null };
 function searchGames(q) {
+    if (searchCache.q === q) return searchCache.result;
     const hits = [];
-    for (let i = 0; i < steamAppsList.length; i++) {
-        const a = steamAppsList[i];
-        if (a.lower.includes(q)) hits.push(a);
+    for (const appid in steamAppsMap) {
+        const name = steamAppsMap[appid];
+        if (name.toLowerCase().includes(q)) hits.push({ appid: +appid, name });
     }
     hits.sort((a, b) => a.name.length - b.name.length);
-    return hits.slice(0, 20).map(a => ({ appid: a.appid, name: a.name }));
+    const result = hits.slice(0, 20);
+    searchCache.q = q; searchCache.result = result;
+    return result;
 }
 
 function getGamePayload(games, customStatus) {
@@ -110,9 +229,14 @@ function getGamePayload(games, customStatus) {
 }
 
 function updateHours(username, client) {
+    // Randomised so 245 bots don't all hit Steam at the same instant.
     const delay = Math.floor(Math.random() * 45000) + 15000;
-    botTimeout(activeBots[username], () => { if (!activeBots[username] || activeBots[username].client !== client) return; client.getUserOwnedApps(client.steamID, { includePlayedFreeGames: true, includeInfo: true }, (err, res) => { if (res && res.apps) { let m = 0; const owned = res.apps.map(a => ({ id: a.appid, name: a.name })); res.apps.forEach(a => m += a.playtime_forever); const acc = getAccount(username); if (acc) { acc.grandTotal = (m / 60).toFixed(1); acc.ownedGames = owned; saveAccount(acc); } } }); }, delay);
+    botTimeout(activeBots[username], () => {
+        if (!activeBots[username] || activeBots[username].client !== client) return;
+        refreshOwnedApps(username, client);
+    }, delay);
 }
+
 
 function checkAndEnsureGames(username, client, retryCount = 0) {
     return new Promise((resolve) => {
@@ -121,18 +245,17 @@ function checkAndEnsureGames(username, client, retryCount = 0) {
             const acc = getAccount(username);
             if (!acc || !acc.games || acc.games.length === 0) return resolve(false);
 
-            let missing = [];
-            try {
-                missing = acc.games.filter(id => !client.ownsApp(id));
-            } catch (e) {
+            const bot = activeBots[username];
+            if (!bot.ownershipReady) {
                 if (retryCount < 6) {
-                    log(`${username} PICS cache not ready, retrying in 5s... (${retryCount + 1}/6)`, "BOT", username);
-                    botTimeout(activeBots[username], () => checkAndEnsureGames(username, client, retryCount + 1).then(resolve), 5000);
+                    log(`${username} ownership not loaded yet, retrying in 5s... (${retryCount + 1}/6)`, "BOT", username);
+                    botTimeout(bot, () => checkAndEnsureGames(username, client, retryCount + 1).then(resolve), 5000);
                     return;
                 }
-                log(`${username} PICS cache not ready, skipping game check.`, "WARN", username);
+                log(`${username} ownership not loaded, skipping game check.`, "WARN", username);
                 return resolve(false);
             }
+            const missing = acc.games.filter(id => botOwnsApp(bot, id) === false);
 
             if (missing.length === 0) return resolve(false);
 
@@ -248,12 +371,24 @@ function startBotProcess(account) {
     const { username, password, sharedSecret, proxy } = account;
     if (activeBots[username] && activeBots[username].client) return;
 
+    // Honour the account's daily window. A manual start outside it would just be
+    // undone by the scheduler a minute later.
+    if (!isWithinSchedule(account)) {
+        if (!activeBots[username]) activeBots[username] = { client: null, status: 'Stopped', guardCallback: null, lastError: null, restartCount: 0, timers: new Set(), epoch: 0 };
+        activeBots[username].status = 'Off schedule';
+        activeBots[username].lastError = `Outside its scheduled window (${account.scheduleStart}-${account.scheduleEnd}).`;
+        log(`${username}: not starting, outside scheduled window.`, "SCHEDULE", username);
+        return;
+    }
+
     if (!activeBots[username]) activeBots[username] = { client: null, status: 'Stopped', guardCallback: null, lastError: null, restartCount: 0, timers: new Set(), epoch: 0 };
     activeBots[username].lastError = null;
     // Invalidate any restart still queued against the previous client.
     activeBots[username].epoch = (activeBots[username].epoch || 0) + 1;
 
-    const clientOptions = { enablePicsCache: true };
+    // enablePicsCache is deliberately off: see refreshOwnedApps above. Ownership is
+    // tracked from getUserOwnedApps instead.
+    const clientOptions = {};
     if (proxy && proxy.trim().length > 0) clientOptions.httpProxy = proxy;
 
     const client = new SteamUser(clientOptions);
@@ -262,21 +397,61 @@ function startBotProcess(account) {
     activeBots[username].loginStartTime = Date.now();
     log(`Starting ${username}...`, "BOT", username);
 
-    const opts = { accountName: username, password: password };
-    
-    if (sharedSecret) { 
-        try { 
-            opts.twoFactorCode = SteamTotp.generateAuthCode(sharedSecret); 
-        } catch (e) { 
-            const errMsg = `Secret Error: ${e.message}`;
-            log(`${username}: ${errMsg}`, "ERROR", username);
-            activeBots[username].status = 'Error'; 
-            activeBots[username].lastError = errMsg;
-            return; 
-        } 
+    // Steam hands out a refresh token on first login. Reusing it avoids sending the
+    // password again, which is what trips rate limits (eresult 84/88) and fires Steam
+    // Guard emails on every restart, crash or proxy rotation.
+    const stored = getAccount(username);
+    const refreshToken = stored && stored.refreshToken;
+
+    let opts;
+    if (refreshToken) {
+        opts = { refreshToken };
+        activeBots[username].usingRefreshToken = true;
+    } else {
+        opts = { accountName: username, password: password };
+        activeBots[username].usingRefreshToken = false;
+        if (sharedSecret) {
+            try {
+                opts.twoFactorCode = SteamTotp.generateAuthCode(sharedSecret);
+            } catch (e) {
+                const errMsg = `Secret Error: ${e.message}`;
+                log(`${username}: ${errMsg}`, "ERROR", username);
+                activeBots[username].status = 'Error';
+                activeBots[username].lastError = errMsg;
+                return;
+            }
+        }
     }
 
-    client.logOn(opts);
+    // Persist the token Steam issues so the next login can skip the password.
+    client.on('refreshToken', (token) => {
+        if (!token) return;
+        const acc = getAccount(username);
+        if (!acc) return;
+        acc.refreshToken = token;
+        saveAccount(acc);
+        log(`${username}: stored refresh token (future logins skip the password).`, "AUTH", username);
+    });
+
+    try {
+        client.logOn(opts);
+    } catch (e) {
+        // A malformed or wrong-account token throws synchronously; drop it and retry
+        // with the password rather than wedging the bot.
+        if (refreshToken) {
+            log(`${username}: refresh token rejected (${e.message}); falling back to password.`, "WARN", username);
+            clearRefreshToken(username);
+            destroyClient(activeBots[username]);
+            return botTimeout(activeBots[username], () => {
+                const acc = getAccount(username);
+                if (acc) startBotProcess(acc);
+            }, 1000);
+        }
+        log(`${username}: logOn failed: ${e.message}`, "ERROR", username);
+        activeBots[username].status = 'Error';
+        activeBots[username].lastError = e.message;
+        return;
+    }
 
     client.on('loggedOn', () => {
         const state = account.personaState !== undefined ? account.personaState : SteamUser.EPersonaState.Online;
@@ -302,17 +477,8 @@ function startBotProcess(account) {
                 });
             };
 
-            if (client.picsCache && client.picsCache.apps && Object.keys(client.picsCache.apps).length > 0) {
-                initGames();
-            } else {
-                client.once('appOwnershipCached', initGames);
-                botTimeout(activeBots[username], () => {
-                    if (activeBots[username] && activeBots[username].client === client) {
-                        client.removeListener('appOwnershipCached', initGames);
-                        initGames();
-                    }
-                }, 60000);
-            }
+            // Load ownership first (cheap), then reconcile the game list against it.
+            refreshOwnedApps(username, client).then(initGames);
         }
 
         activeBots[username].status = 'Running';
@@ -359,6 +525,23 @@ function startBotProcess(account) {
         const errorDetails = e.eresult ? `(Steam Code: ${e.eresult})` : '';
         const fullMsg = `${e.message} ${errorDetails}`.trim();
         log(`${username} Error: ${fullMsg}`, "ERROR", username);
+
+        // eresult 5 with a refresh token means the token expired or was revoked (a
+        // password change does this), not that the password is wrong. Drop it and
+        // retry with credentials before condemning the account.
+        if (e.eresult === 5 && activeBots[username] && activeBots[username].usingRefreshToken) {
+            log(`${username}: refresh token expired. Retrying with password.`, "WARN", username);
+            clearRefreshToken(username);
+            const epoch = currentEpoch(username);
+            destroyClient(activeBots[username]);
+            activeBots[username].status = 'Reconnecting...';
+            botTimeout(activeBots[username], () => {
+                if (currentEpoch(username) !== epoch) return;
+                const acc = getAccount(username);
+                if (acc) startBotProcess(acc);
+            }, 2000);
+            return;
+        }
 
         if (e.eresult === 5) { // InvalidPassword
             log(`${username}: Invalid password. Disabling auto-start.`, "ERROR", username);
@@ -413,6 +596,17 @@ function startBotProcess(account) {
             return;
         }
 
+        if (e.eresult === 87) { // InvalidLoginAuthCode
+            log(`${username}: Steam Guard code was invalid or expired. Stopping.`, "ERROR", username);
+            sendDiscordWebhook("Invalid Guard Code", `Account **${username}** rejected the Steam Guard code.`, 15158332);
+            stopBot(username);
+            if (activeBots[username]) {
+                activeBots[username].status = 'Bad Guard Code';
+                activeBots[username].lastError = 'The Steam Guard code was invalid or expired. Enter a fresh one.';
+            }
+            return;
+        }
+
         if (e.eresult === 65) { // TwoFactorCodeMismatch
             log(`${username}: Shared secret is invalid (2FA mismatch). Stopping.`, "ERROR", username);
             stopBot(username);
@@ -448,6 +642,75 @@ function startBotProcess(account) {
         handleCrash(username, `Disconnected: ${msg} (${eresult})`);
     });
 
+    // A VAC or game ban on a boosting farm is worth knowing about immediately.
+    client.on('vacBans', (numBans, appids) => {
+        if (!numBans) return;
+        const acc = getAccount(username);
+        if (acc) {
+            acc.vacBanned = true;
+            acc.vacBanApps = appids || [];
+            saveAccount(acc);
+        }
+        const names = (appids || []).map(id => getGameName(id)).join(', ') || 'unknown games';
+        log(`${username} has ${numBans} VAC ban(s): ${names}`, "ERROR", username);
+        if (activeBots[username]) activeBots[username].lastError = `VAC banned (${names})`;
+        sendDiscordWebhook("VAC Ban Detected", `Account **${username}** has ${numBans} VAC ban(s) on: ${names}`, 15158332);
+    });
+
+    // A limited account can't do much and will never behave normally; surface it
+    // rather than letting the user wonder why nothing works.
+    client.on('accountLimitations', (limited, communityBanned, locked, canInviteFriends) => {
+        const acc = getAccount(username);
+        if (acc) {
+            acc.limited = !!limited;
+            acc.communityBanned = !!communityBanned;
+            acc.locked = !!locked;
+            saveAccount(acc);
+        }
+        if (locked) {
+            log(`${username} account is LOCKED by Steam. Stopping.`, "ERROR", username);
+            sendDiscordWebhook("Account Locked", `Account **${username}** is locked by Steam.`, 15158332);
+            stopBot(username);
+            if (activeBots[username]) {
+                activeBots[username].status = 'Locked';
+                activeBots[username].lastError = 'Steam has locked this account.';
+            }
+        } else if (limited) {
+            log(`${username} is a limited account.`, "WARN", username);
+        }
+    });
+
+    // Steam fires this when another session (you, on your own PC) takes over the
+    // account. Without handling it the bot happily reports "Running" while earning
+    // nothing at all.
+    client.on('playingState', (blocked, playingApp) => {
+        const bot = activeBots[username];
+        if (!bot || bot.client !== client) return;
+        bot.playBlocked = !!blocked;
+        bot.blockingApp = blocked ? playingApp : null;
+
+        if (blocked) {
+            const acc = getAccount(username);
+            const gameName = playingApp ? getGameName(playingApp) : 'another game';
+            bot.lastError = `Another session is playing ${gameName}; hours are not accruing.`;
+            if (bot.status === 'Running') bot.status = 'Blocked (playing elsewhere)';
+            log(`${username} blocked: another session is playing ${gameName}.`, "WARN", username);
+
+            if (acc && acc.autoReclaim) {
+                log(`${username}: auto-reclaim enabled, kicking the other session.`, "BOT", username);
+                // gamesPlayed(payload, true) kicks the blocking session, then resumes.
+                try { updateBotGames(username, true); } catch (e) {}
+            } else {
+                sendDiscordWebhook("Boosting Blocked", `Account **${username}** stopped boosting: another session is playing ${gameName}.`, 16776960);
+            }
+        } else if (bot.status === 'Blocked (playing elsewhere)') {
+            bot.status = 'Running';
+            bot.lastError = null;
+            log(`${username} regained its playing session; resuming.`, "SUCCESS", username);
+            try { updateBotGames(username); } catch (e) {}
+        }
+    });
+
     client.on('friendRelationship', (sid, relationship) => {
         if (relationship === SteamUser.EFriendRelationship.RequestRecipient) {
             const acc = getAccount(username);
@@ -459,17 +722,16 @@ function startBotProcess(account) {
     });
 }
 
-function updateBotGames(username) {
+// force=true passes Steam's kick flag, reclaiming the playing session from another
+// device. Only used when the account opts in via autoReclaim.
+function updateBotGames(username, force = false) {
     const bot = activeBots[username];
     const acc = getAccount(username);
     if (!bot || !bot.client || !acc) return; // acc is gone if the account was deleted mid-run
 
     let gamesToFarm = acc.games || [];
-    try {
-        if (bot.client.picsCache && bot.client.picsCache.apps && Object.keys(bot.client.picsCache.apps).length > 0) {
-            gamesToFarm = gamesToFarm.filter(id => bot.client.ownsApp(id));
-        }
-    } catch(e) {}
+    // Only filter once ownership is known; before that, play what the user configured.
+    if (bot.ownershipReady) gamesToFarm = gamesToFarm.filter(id => botOwnsApp(bot, id) !== false);
 
     // Clear existing rotation if any
     if (bot.rotationInterval) { clearInterval(bot.rotationInterval); bot.rotationInterval = null; }
@@ -496,7 +758,7 @@ function updateBotGames(username) {
             const intervalMs = intervalMinutes * 60 * 1000;
 
             log(`${username} rotating games. Playing batch ${currentBatch}/${totalBatches} (Total: ${allGames.length} games).`, "BOT", username);
-            bot.client.gamesPlayed(getGamePayload(gamesToPlay, current.customStatus));
+            bot.client.gamesPlayed(getGamePayload(gamesToPlay, current.customStatus), force);
             bot.nextRotation = Date.now() + intervalMs;
 
             // The interval period is fixed at creation, so pick up a changed
@@ -510,7 +772,7 @@ function updateBotGames(username) {
         rotate(); // Play first set immediately
         bot.rotationInterval = setInterval(rotate, scheduledMinutes * 60 * 1000);
     } else {
-        bot.client.gamesPlayed(getGamePayload(gamesToFarm, acc.customStatus));
+        bot.client.gamesPlayed(getGamePayload(gamesToFarm, acc.customStatus), force);
     }
     
     if (acc.personaState !== undefined) bot.client.setPersona(acc.personaState);
@@ -536,6 +798,8 @@ function getActiveBots() { return activeBots; }
 // flushed to disk every STATS_FLUSH_MINUTES. Writing all 245 accounts every minute
 // meant up to 245 synchronous writeFileSync calls per minute on the event loop.
 const STATS_FLUSH_MINUTES = 5;
+// How often to re-read real playtime from Steam for running bots.
+const HOURS_REFRESH_MINUTES = 30;
 let statsTicks = 0;
 
 setInterval(() => {
@@ -554,20 +818,23 @@ setInterval(() => {
         if (!currentUsers.has(u)) delete pendingFreeGames[u];
     });
 
+    enforceSchedules();
+
     statsTicks++;
     const flush = statsTicks % STATS_FLUSH_MINUTES === 0;
+    if (flush) {
+        accounts.forEach(acc => {
+            if (acc._dirty) { delete acc._dirty; saveAccount(acc); }
+        });
+    }
 
-    accounts.forEach(acc => {
-        const bot = activeBots[acc.username];
-        if (bot && bot.status === 'Running' && (acc.games||[]).length > 0) {
-            acc.boostedHours = (acc.boostedHours || 0) + ((1/60) * acc.games.length);
-            acc._dirty = true;
-        }
-        if (flush && acc._dirty) {
-            delete acc._dirty;
-            saveAccount(acc);
-        }
-    });
+    // Refresh playtime from Steam periodically so boostedHours tracks reality.
+    if (statsTicks % HOURS_REFRESH_MINUTES === 0) {
+        accounts.forEach(acc => {
+            const bot = activeBots[acc.username];
+            if (bot && bot.status === 'Running' && bot.client) updateHours(acc.username, bot.client);
+        });
+    }
 }, 60000);
 
 // Persist anything the stats loop has accumulated but not yet written.
@@ -629,16 +896,17 @@ function requestFreeGames(username, gameIds, autoStop = false, retryCount = 0) {
                 botTimeout(bot, () => {
                     if (!activeBots[username] || activeBots[username].client !== currentClient) return resolve({ result: 'error', msg: 'Bot disconnected' });
                     
-                    let missing = [];
-                    try {
-                        missing = gameIds.filter(id => !bot.client.ownsApp(id));
-                    } catch (e) {
-                        log(`${username} PICS cache error during verification: ${e.message}`, "WARN", username);
-                        return resolve({ result: 'owned' }); // Skip verification to avoid loop/crash
+                    // Re-read ownership so licences granted a moment ago are visible.
+                    refreshOwnedApps(username, currentClient).then((apps) => {
+                    if (!activeBots[username] || activeBots[username].client !== currentClient) return resolve({ result: 'error', msg: 'Bot disconnected' });
+                    if (!apps) {
+                        log(`${username} could not verify ownership (owned-apps fetch failed).`, "WARN", username);
+                        return resolve({ result: 'owned' }); // Skip verification to avoid a loop
                     }
+                    const missing = gameIds.filter(id => botOwnsApp(activeBots[username], id) === false);
                     const verifiedCount = gameIds.length - missing.length;
-                    
-                    updateHours(username, bot.client);
+
+                    updateHours(username, currentClient);
                         
                         if (missing.length > 0) {
                             if (retryCount < 2) {
@@ -681,6 +949,7 @@ function requestFreeGames(username, gameIds, autoStop = false, retryCount = 0) {
                             }
                             resolve({ result: 'owned' });
                         }
+                    });
                 }, 2000);
             }
         });
@@ -691,4 +960,4 @@ function queueFreeGames(username, games, autoStop = false) {
     pendingFreeGames[username] = { games, autoStop };
 }
 
-module.exports = { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts };
+module.exports = { isWithinSchedule, recordDailyHours, startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts };

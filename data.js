@@ -18,6 +18,21 @@ if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR, { recursive: true }
 let accountsCache = {};
 let accountsLoaded = false;
 
+// Write to a temp file in the same directory, then rename. rename() is atomic on the
+// same filesystem, so a crash or power loss mid-write leaves the previous file intact
+// instead of a truncated one. The old code wrote in place, so an interrupted save of
+// an account (or users.json) destroyed it.
+function writeFileAtomic(file, data) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    try {
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, file);
+    } catch (e) {
+        try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) {}
+        throw e;
+    }
+}
+
 function loadAllAccounts() {
     if (!fs.existsSync(ACCOUNTS_DIR)) return;
     const files = fs.readdirSync(ACCOUNTS_DIR).filter(f => f.endsWith('.json'));
@@ -25,7 +40,7 @@ function loadAllAccounts() {
         try {
             const r = JSON.parse(fs.readFileSync(path.join(ACCOUNTS_DIR, file), 'utf8'));
             if (r && r.username) {
-                accountsCache[r.username.toLowerCase()] = { ...r, password: decrypt(r.password), sharedSecret: decrypt(r.sharedSecret) };
+                accountsCache[r.username.toLowerCase()] = { ...r, password: decrypt(r.password), sharedSecret: decrypt(r.sharedSecret), refreshToken: decrypt(r.refreshToken) };
             }
         } catch(e) {}
     });
@@ -46,15 +61,15 @@ if (fs.existsSync(USERS_FILE)) {
                 migrated = true;
             }
         });
-        if (migrated) fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2));
+        if (migrated) writeFileAtomic(USERS_FILE, JSON.stringify(panelUsers, null, 2));
     } catch(e){}
 } else {
     panelUsers = [{ username: "admin", password: bcrypt.hashSync("password", 12), role: "admin" }];
-    fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2));
+    writeFileAtomic(USERS_FILE, JSON.stringify(panelUsers, null, 2));
 }
 
 function getUsers() { return panelUsers; }
-function saveUsers(users) { panelUsers = users; fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2)); }
+function saveUsers(users) { panelUsers = users; writeFileAtomic(USERS_FILE, JSON.stringify(panelUsers, null, 2)); }
 
 // --- ACCOUNTS ---
 function getAllAccounts() {
@@ -71,9 +86,9 @@ function saveAccount(acc) {
     if (!accountsLoaded) loadAllAccounts();
     if (!acc.category || acc.category.trim() === "") acc.category = "Default";
     accountsCache[acc.username.toLowerCase()] = acc;
-    const d = { ...acc, password: encrypt(acc.password), sharedSecret: encrypt(acc.sharedSecret) };
+    const d = { ...acc, password: encrypt(acc.password), sharedSecret: encrypt(acc.sharedSecret), refreshToken: encrypt(acc.refreshToken) };
     try {
-        fs.writeFileSync(path.join(ACCOUNTS_DIR, acc.username.toLowerCase() + '.json'), JSON.stringify(d, null, 2));
+        writeFileAtomic(path.join(ACCOUNTS_DIR, acc.username.toLowerCase() + '.json'), JSON.stringify(d, null, 2));
     } catch(e) {}
 }
 
@@ -94,7 +109,7 @@ function saveSessions(s) {
     sessions = s;
     const now = Date.now();
     for (const t in sessions) if (sessions[t].expiresAt < now) delete sessions[t];
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2)); 
+    writeFileAtomic(SESSIONS_FILE, JSON.stringify(sessions, null, 2)); 
 }
 
 // --- BUNDLES ---
@@ -102,21 +117,21 @@ let bundles = {};
 if (fs.existsSync(BUNDLES_FILE)) { try { bundles = JSON.parse(fs.readFileSync(BUNDLES_FILE)); } catch(e){} }
 
 function getBundles() { return bundles; }
-function saveBundles(b) { bundles = b; fs.writeFileSync(BUNDLES_FILE, JSON.stringify(bundles, null, 2)); }
+function saveBundles(b) { bundles = b; writeFileAtomic(BUNDLES_FILE, JSON.stringify(bundles, null, 2)); }
 
 // --- SETTINGS ---
 let globalSettings = { discordWebhook: "", rotationInterval: 60 };
 if (fs.existsSync(SETTINGS_FILE)) { try { globalSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE)); } catch(e){} }
 
 function getSettings() { return globalSettings; }
-function saveSettings(s) { globalSettings = s; fs.writeFileSync(SETTINGS_FILE, JSON.stringify(globalSettings, null, 2)); }
+function saveSettings(s) { globalSettings = s; writeFileAtomic(SETTINGS_FILE, JSON.stringify(globalSettings, null, 2)); }
 
 // --- GLOBAL PROXIES ---
 let globalProxies = [];
 if (fs.existsSync(PROXIES_FILE)) { try { globalProxies = JSON.parse(fs.readFileSync(PROXIES_FILE)); } catch(e){} }
 
 function getGlobalProxies() { return globalProxies; }
-function saveGlobalProxies(p) { globalProxies = p; fs.writeFileSync(PROXIES_FILE, JSON.stringify(globalProxies, null, 2)); }
+function saveGlobalProxies(p) { globalProxies = p; writeFileAtomic(PROXIES_FILE, JSON.stringify(globalProxies, null, 2)); }
 
 function getAccountUsernames() {
     if (!accountsLoaded) loadAllAccounts();
