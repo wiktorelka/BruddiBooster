@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 const rateLimit = require('express-rate-limit');
@@ -9,7 +10,17 @@ const http = require('http');
 
 const { log, getLogs, clearLogs, encrypt, decrypt } = require('./utils');
 const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies } = require('./data');
-const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames } = require('./bot');
+const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts } = require('./bot');
+
+// 245 Steam clients share this process. A throw from any one of their callbacks
+// would otherwise take down every other bot, so log and keep serving. This is a
+// backstop -- the teardown path in bot.js is what stops clients throwing at all.
+process.on('uncaughtException', (err) => {
+    log(`Uncaught exception: ${err && err.stack ? err.stack : err}`, "ERROR");
+});
+process.on('unhandledRejection', (reason) => {
+    log(`Unhandled rejection: ${reason && reason.stack ? reason.stack : reason}`, "ERROR");
+});
 
 const app = express();
 const server = http.createServer(app);
@@ -46,6 +57,9 @@ const { setLogListener } = require('./utils');
 setLogListener((logEntry) => { io.emit('new_log', logEntry); });
 
 const loginLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, message: { success: false, msg: "Too many attempts" } });
+const bulkLimiter = rateLimit({ windowMs: 60*1000, max: 5, message: { success: false, msg: "Too many bulk requests" } });
+// Blunt session-token guessing. Generous enough for the dashboard's own polling.
+const apiLimiter = rateLimit({ windowMs: 60*1000, max: 600, message: { error: 'Too many requests' } });
 
 // Init Bots
 const autoStartAccounts = getAllAccounts().filter(acc => acc.autoStart);
@@ -58,22 +72,36 @@ autoStartAccounts.forEach(acc => {
 const requireAuth = (req, res, next) => {
     const token = req.headers.authorization;
     const sessions = getSessions();
-    if (sessions[token] && sessions[token].expiresAt > Date.now()) { req.user = sessions[token]; next(); } else { delete sessions[token]; saveSessions(sessions); res.status(401).json({ error: 'Unauthorized' }); }
+    if (token && sessions[token] && sessions[token].expiresAt > Date.now()) {
+        req.user = sessions[token];
+        return next();
+    }
+    // Only touch disk when a real session actually expired. Previously every
+    // request with a bad or absent token triggered a synchronous full rewrite of
+    // sessions.json, which is a free disk-write amplifier for an unauthenticated
+    // caller.
+    if (token && sessions[token]) { delete sessions[token]; saveSessions(sessions); }
+    res.status(401).json({ error: 'Unauthorized' });
 };
+
+// Expired sessions used to be pruned only as a side effect of a failed request.
+setInterval(() => { saveSessions(getSessions()); }, 60 * 60 * 1000).unref();
 
 app.get('/api/verify_session', (req, res) => {
     const token = req.headers.authorization;
     const sessions = getSessions();
     if (token && sessions[token] && sessions[token].expiresAt > Date.now()) {
+        // The panel user may have been deleted while this session was still valid.
         const user = getUsers().find(u => u.username === sessions[token].username);
+        if (!user) return res.json({ success: false });
         res.json({ success: true, role: sessions[token].role, username: sessions[token].username, has2FA: !!user.twoFactorSecret });
     } else res.json({ success: false });
 });
 
-app.post('/api/login', loginLimiter, (req, res) => {
+app.post('/api/login', loginLimiter, async (req, res) => {
     const { username, password, token } = req.body;
     const user = getUsers().find(u => u.username === username);
-    if (!user || decrypt(user.password) !== password) return res.status(401).json({ success: false, msg: 'Invalid Credentials' });
+    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ success: false, msg: 'Invalid Credentials' });
     if (user.twoFactorSecret) {
         if (!token) return res.json({ success: false, requires2fa: true });
         if (!speakeasy.totp.verify({ secret: decrypt(user.twoFactorSecret), encoding: 'base32', token })) return res.status(401).json({ success: false, msg: 'Invalid Code' });
@@ -91,11 +119,11 @@ app.post('/api/logout', (req, res) => {
     res.json({ success: true }); 
 });
 
-app.use('/api/', requireAuth);
+app.use('/api/', apiLimiter, requireAuth);
 
 app.post('/api/library', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ games: acc.ownedGames || [] }); });
 
-app.post('/api/accounts/bulk', (req, res) => {
+app.post('/api/accounts/bulk', bulkLimiter, (req, res) => {
     const { data, category, autoStart, autoAccept, bundle } = req.body; const lines = data.split(/\r?\n/); let c = 0; let skipped = 0;
     const bundles = getBundles(); 
     let selectedGames = [730];
@@ -107,6 +135,7 @@ app.post('/api/accounts/bulk', (req, res) => {
 app.get('/api/accounts/export', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
     const accounts = getAllAccounts();
+    log(`${req.user.username} exported ${accounts.length} accounts.`, "AUDIT");
     const data = accounts.map(a => {
         let line = `${a.username}:${a.password}`;
         if (a.sharedSecret) line += `:${a.sharedSecret}`;
@@ -170,11 +199,53 @@ app.post('/api/accounts', (req, res) => { if (getAccount(req.body.username)) ret
 app.post('/api/edit', (req, res) => { 
     const { oldUsername, newUsername, newPassword, newSharedSecret, newProxy, newCategory, newAutoStart, newAutoAccept } = req.body;
     if(!verifyOwner(req, oldUsername)) return res.status(403).json({});
-    const ex = getAccount(oldUsername); stopBot(oldUsername);
-    if (oldUsername !== newUsername) { deleteAccountFile(oldUsername); delete getActiveBots()[oldUsername]; }
-    saveAccount({ ...ex, username: newUsername, password: (newPassword && newPassword !== "") ? newPassword : ex.password, sharedSecret: newSharedSecret, proxy: newProxy, category: newCategory||ex.category||"Default", autoStart: newAutoStart, autoAccept: newAutoAccept });
+    const ex = getAccount(oldUsername);
+    if (!ex) return res.status(404).json({ error: 'Not found' });
+    stopBot(oldUsername);
+    if (oldUsername !== newUsername) { deleteAccountFile(oldUsername); forgetAccountCaches(oldUsername); delete getActiveBots()[oldUsername]; }
+    // Only overwrite what the caller actually sent. The edit modal omits proxy and
+    // autoAccept entirely, so taking these unconditionally wiped the account's proxy
+    // on every edit. Blank password/secret means "unchanged", as the UI advertises.
+    saveAccount({
+        ...ex,
+        username: newUsername,
+        password: (newPassword && newPassword !== "") ? newPassword : ex.password,
+        sharedSecret: (newSharedSecret && newSharedSecret !== "") ? newSharedSecret : ex.sharedSecret,
+        proxy: newProxy !== undefined ? newProxy : ex.proxy,
+        category: newCategory || ex.category || "Default",
+        autoStart: newAutoStart !== undefined ? newAutoStart : ex.autoStart,
+        autoAccept: newAutoAccept !== undefined ? newAutoAccept : ex.autoAccept
+    });
     res.json({ success: true });
 });
+// /api/accounts is polled by every open dashboard every few seconds and resolves a
+// name for every game of every account. Cache the resolved list per account and
+// reuse it until that account's games array is actually replaced.
+const gameNameCache = new Map(); // username -> { ref, resolved }
+function resolveGames(acc) {
+    const ref = acc.games || [];
+    const hit = gameNameCache.get(acc.username);
+    if (hit && hit.ref === ref) return hit.resolved;
+    const resolved = ref.map(id => ({ id, name: getGameName(id) }));
+    gameNameCache.set(acc.username, { ref, resolved });
+    return resolved;
+}
+// Kept off the account object itself: saveAccount() spreads the record to disk, so
+// anything stashed there would be persisted into the account JSON.
+const ownedIdCache = new Map(); // username -> { ref, ids }
+function resolveOwnedIds(acc) {
+    const ref = acc.ownedGames || [];
+    const hit = ownedIdCache.get(acc.username);
+    if (hit && hit.ref === ref) return hit.ids;
+    const ids = ref.map(g => g.id);
+    ownedIdCache.set(acc.username, { ref, ids });
+    return ids;
+}
+function forgetAccountCaches(username) {
+    gameNameCache.delete(username);
+    ownedIdCache.delete(username);
+}
+
 // UPDATED: Return lastError
 app.get('/api/accounts', (req, res) => {
     let accounts = getAllAccounts().filter(a => a.owner === req.user.username || (req.user.role === 'admin' && !a.owner));
@@ -194,11 +265,11 @@ app.get('/api/accounts', (req, res) => {
             status: b ? b.status : 'Stopped', 
             lastError: b ? b.lastError : null, // SEND ERROR TO FRONTEND
             nextRotation: b ? b.nextRotation : null,
-            grandTotal: acc.grandTotal || "0.0", steamId: acc.steamId || null, games: (acc.games||[]).map(id => ({ id, name: getGameName(id) })), 
+            grandTotal: acc.grandTotal || "0.0", steamId: acc.steamId || null, games: resolveGames(acc),
             customStatus: acc.customStatus || "", addedAt: acc.addedAt || Date.now(), boostedHours: acc.boostedHours || 0, 
             personaState: acc.personaState !== undefined ? acc.personaState : 1, category: acc.category || "Default", autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept, ip: displayIp,
             proxy: acc.proxy || "",
-            ownedGames: (acc.ownedGames || []).map(g => g.id),
+            ownedGames: resolveOwnedIds(acc),
             hasSharedSecret: !!acc.sharedSecret
         };
     }));
@@ -251,14 +322,14 @@ app.post('/api/panic', (req, res) => {
 app.post('/api/games', (req, res) => { 
     if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); 
     const acc = getAccount(req.body.username); 
-    acc.games = req.body.games; // Removed slice limit
+    acc.games = (req.body.games || []).filter(id => Number.isInteger(id) && id > 0 && id < 2147483647);
     acc.customStatus = req.body.customStatus || ""; acc.personaState = parseInt(req.body.personaState); 
     saveAccount(acc); 
     const b = getActiveBots()[req.body.username]; 
     if (b && b.client && b.status === 'Running') { updateBotGames(req.body.username); }
     res.json({ success: true }); 
 });
-app.post('/api/games/free_license', (req, res) => {
+app.post('/api/games/free_license', bulkLimiter, (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
     const { usernames, games, autoStart } = req.body;
     if (!usernames || !Array.isArray(usernames) || !games || !Array.isArray(games)) return res.status(400).json({ error: 'Invalid data' });
@@ -312,9 +383,9 @@ app.post('/api/games/free_license', (req, res) => {
         io.emit('free_games_progress', { processed: total, total, stats, complete: true });
     })();
 });
-app.post('/api/delete', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); deleteAccountFile(req.body.username); delete getActiveBots()[req.body.username]; res.json({ success: true }); });
-app.post('/api/get_account', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ username: acc.username, sharedSecret: acc.sharedSecret || '', proxy: acc.proxy || '', category: acc.category || '', autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept }); });
-app.post('/api/settings/password', (req, res) => { const users = getUsers(); const u = users.find(x => x.username === req.user.username); if (decrypt(u.password) !== req.body.currentPass) return res.status(400).json({}); u.password = encrypt(req.body.newPass); saveUsers(users); res.json({ success: true }); });
+app.post('/api/delete', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); deleteAccountFile(req.body.username); forgetAccountCaches(req.body.username); delete getActiveBots()[req.body.username]; res.json({ success: true }); });
+app.post('/api/get_account', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); if (!acc) return res.status(404).json({}); res.json({ username: acc.username, hasSharedSecret: !!acc.sharedSecret, proxy: acc.proxy || '', category: acc.category || '', autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept }); });
+app.post('/api/settings/password', async (req, res) => { const users = getUsers(); const u = users.find(x => x.username === req.user.username); if (!(await bcrypt.compare(req.body.currentPass, u.password))) return res.status(400).json({}); u.password = await bcrypt.hash(req.body.newPass, 12); saveUsers(users); res.json({ success: true }); });
 app.post('/api/settings/2fa/generate', (req, res) => { const s = speakeasy.generateSecret({ name: `BruddiBooster (${req.user.username})` }); qrcode.toDataURL(s.otpauth_url, (e, d) => { res.json({ secret: s.base32, qr: d }); }); });
 app.post('/api/settings/2fa/enable', (req, res) => { if (speakeasy.totp.verify({ secret: req.body.secret, encoding: 'base32', token: req.body.token })) { const users = getUsers(); users.find(u => u.username === req.user.username).twoFactorSecret = encrypt(req.body.secret); saveUsers(users); res.json({ success: true }); } else res.status(400).json({}); });
 app.post('/api/settings/2fa/disable', (req, res) => { const users = getUsers(); users.find(u => u.username === req.user.username).twoFactorSecret = null; saveUsers(users); res.json({ success: true }); });
@@ -333,8 +404,8 @@ app.post('/api/logs/clear', (req, res) => {
 });
 app.get('/api/search_games', (req, res) => { const q = (req.query.q || "").toLowerCase().trim(); if (!q) return res.json([]); res.json(searchGames(q)); });
 app.get('/api/users', (req, res) => { if (req.user.role !== 'admin') return res.status(403).json([]); res.json(getUsers().map(u => ({ username: u.username, role: u.role }))); });
-app.post('/api/users', (req, res) => { if (req.user.role !== 'admin') return res.status(403).json({}); const users = getUsers(); users.push({ username: req.body.username, password: encrypt(req.body.password), role: 'user' }); saveUsers(users); res.json({ success: true }); });
-app.post('/api/users/delete', (req, res) => { if (req.user.role !== 'admin') return res.status(403).json({}); let users = getUsers(); users = users.filter(u => u.username !== req.body.username); saveUsers(users); res.json({ success: true }); });
+app.post('/api/users', async (req, res) => { if (req.user.role !== 'admin') return res.status(403).json({}); const users = getUsers(); users.push({ username: req.body.username, password: await bcrypt.hash(req.body.password, 12), role: 'user' }); saveUsers(users); res.json({ success: true }); });
+app.post('/api/users/delete', (req, res) => { if (req.user.role !== 'admin') return res.status(403).json({}); let users = getUsers(); users = users.filter(u => u.username !== req.body.username); saveUsers(users); log(`${req.user.username} deleted panel user "${req.body.username}".`, "AUDIT"); res.json({ success: true }); });
 
 app.get('/api/bundles', (req, res) => {
     const b = getBundles();
@@ -344,12 +415,15 @@ app.get('/api/bundles', (req, res) => {
     }
     res.json(resolved);
 });
-app.post('/api/bundles', (req, res) => { 
+// Bundles are global, so writing them is admin-only (reading them is not).
+app.post('/api/bundles', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
     const { name, games } = req.body;
     if (!name || !games || !Array.isArray(games)) return res.status(400).json({ error: 'Invalid data' });
-    const b = getBundles(); b[name] = games; saveBundles(b); res.json({ success: true });
+    const b = getBundles(); b[name] = games.filter(id => Number.isInteger(id) && id > 0 && id < 2147483647); saveBundles(b); res.json({ success: true });
 });
 app.post('/api/bundles/delete', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({});
     const { name } = req.body;
     const b = getBundles(); if (b[name]) { delete b[name]; saveBundles(b); } res.json({ success: true });
 });
@@ -409,8 +483,8 @@ app.post('/api/proxy/check', (req, res) => {
         };
 
         const request = http.request(options, (response) => {
+            response.resume(); // Consume the stream either way, or the socket is held open
             if (response.statusCode === 200) {
-                response.resume(); // Consume data stream
                 safeReply({ success: true, ip: "Steam Reachable" });
             } else {
                 safeReply({ success: false, msg: `HTTP ${response.statusCode}` });
@@ -425,4 +499,33 @@ app.post('/api/proxy/check', (req, res) => {
     }
 });
 
+// Failing to bind is fatal -- without this the uncaughtException handler above
+// would swallow EADDRINUSE and leave a process running that never serves anything.
+server.on('error', (err) => {
+    log(`Server error: ${err.message}`, "ERROR");
+    process.exit(1);
+});
 server.listen(3000, () => log('BruddiBooster v18 Running on 3000', "SYSTEM"));
+
+// --- GRACEFUL SHUTDOWN ---
+// Without this, a restart drops every Steam connection mid-session and loses up to
+// STATS_FLUSH_MINUTES of accumulated boostedHours.
+let shuttingDown = false;
+function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`Received ${signal}. Shutting down...`, "SYSTEM");
+
+    const bots = getActiveBots();
+    const running = Object.keys(bots).filter(u => bots[u].client);
+    running.forEach(u => stopBot(u));
+    const flushed = flushDirtyAccounts();
+    log(`Logged off ${running.length} bots, flushed ${flushed} accounts.`, "SYSTEM");
+
+    io.close();
+    server.close(() => process.exit(0));
+    // steam-user's logoff handshake needs a moment; don't wait forever for it.
+    setTimeout(() => process.exit(0), 8000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

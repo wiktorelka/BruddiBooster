@@ -1,15 +1,19 @@
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcryptjs');
 const { encrypt, decrypt } = require('./utils');
 
-const ACCOUNTS_DIR = path.join(__dirname, 'accounts');
-const USERS_FILE = path.join(__dirname, 'users.json');
-const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
-const BUNDLES_FILE = path.join(__dirname, 'bundles.json');
-const SETTINGS_FILE = path.join(__dirname, 'settings.json');
-const PROXIES_FILE = path.join(__dirname, 'proxies.json');
+// Data lives next to the code by default; HB_DATA_DIR lets tests point at a scratch dir.
+const DATA_DIR = process.env.HB_DATA_DIR || __dirname;
 
-if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR);
+const ACCOUNTS_DIR = path.join(DATA_DIR, 'accounts');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const BUNDLES_FILE = path.join(DATA_DIR, 'bundles.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
+const PROXIES_FILE = path.join(DATA_DIR, 'proxies.json');
+
+if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR, { recursive: true });
 
 let accountsCache = {};
 let accountsLoaded = false;
@@ -31,12 +35,21 @@ function loadAllAccounts() {
 // --- USERS ---
 let panelUsers = [];
 if (fs.existsSync(USERS_FILE)) {
-    try { panelUsers = JSON.parse(fs.readFileSync(USERS_FILE)); 
-        panelUsers.forEach(u => { if (!u.password.includes(':')) u.password = encrypt(u.password); });
-        fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2));
+    try {
+        panelUsers = JSON.parse(fs.readFileSync(USERS_FILE));
+        let migrated = false;
+        panelUsers.forEach(u => {
+            if (!u.password.startsWith('$2b$') && !u.password.startsWith('$2a$')) {
+                // Migrate from AES-encrypted or plaintext to bcrypt
+                const plain = u.password.includes(':') ? decrypt(u.password) : u.password;
+                u.password = bcrypt.hashSync(plain, 12);
+                migrated = true;
+            }
+        });
+        if (migrated) fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2));
     } catch(e){}
 } else {
-    panelUsers = [{ username: "admin", password: encrypt("password"), role: "admin" }];
+    panelUsers = [{ username: "admin", password: bcrypt.hashSync("password", 12), role: "admin" }];
     fs.writeFileSync(USERS_FILE, JSON.stringify(panelUsers, null, 2));
 }
 

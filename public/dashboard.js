@@ -14,9 +14,30 @@ let selectedFreeGames = [];
 let selectedFreeAccounts = [];
 let confirmResolver = null;
 let statusChartInstance = null;
+let pollTimer = null;
 let spareProxies = [];
 let hideOwnedAccounts = false;
 let currentSort = { column: null, direction: 'asc' };
+
+// Steam persona names, game names, log lines and error strings all reach these
+// templates from outside the panel and land in innerHTML. Escape anything that
+// isn't ours.
+//
+// esc()   - text nodes and quoted attribute values.
+// jsArg() - a value being passed to an inline onclick handler. HTML-escaping alone
+//           is not enough there: the browser HTML-decodes the attribute before the
+//           JS is parsed, so an escaped &#39; turns back into a quote and breaks out
+//           of the string. JSON-encoding first produces a complete, self-delimiting
+//           JS literal that survives that decode. Emit it *without* surrounding
+//           quotes in the template: onclick="f(${jsArg(x)})".
+function esc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function jsArg(s) {
+    return esc(JSON.stringify(String(s == null ? '' : s)));
+}
 
 const POPULAR_FREE_GAMES = [
     { id: 730, name: "Counter-Strike 2" },
@@ -99,13 +120,17 @@ window.onDashboardLoaded = function() {
     // Setup UI based on role
     document.getElementById('nav-users').style.display = currentUserRole === 'admin' ? 'flex' : 'none';
     
-    // Start polling
+    // Start polling. Each tick re-serialises every account server-side and rebuilds
+    // the table, so don't poll faster than the status actually changes. Skip it
+    // entirely while the tab is hidden.
     fetchAccounts();
-    setInterval(() => { 
-        if(!authToken) return; 
-        if(activeTab === 'dash' || activeTab === 'statistics') fetchAccounts(); 
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+        if(!authToken) return;
+        if(document.hidden) return;
+        if(activeTab === 'dash' || activeTab === 'statistics') fetchAccounts();
         if(activeTab === 'logs') fetchLogs();
-    }, 3000);
+    }, 5000);
 
     // Socket.io Live Logs
     if (typeof io !== 'undefined') {
@@ -166,7 +191,7 @@ function renderStatisticsView() {
     if (noGuardAccs.length === 0) {
         list.innerHTML = '<p style="color:var(--text-muted);">All accounts have Steam Guard enabled.</p>';
     } else {
-        list.innerHTML = noGuardAccs.map(a => `<div class="tag" style="background:var(--bg-secondary);border:1px solid var(--border);padding:5px 10px;border-radius:4px;">${a.username}</div>`).join('');
+        list.innerHTML = noGuardAccs.map(a => `<div class="tag" style="background:var(--bg-secondary);border:1px solid var(--border);padding:5px 10px;border-radius:4px;">${esc(a.username)}</div>`).join('');
     }
 
     const running = cachedAccounts.filter(a => a.status === 'Running').length;
@@ -176,6 +201,10 @@ function renderStatisticsView() {
     if (typeof Chart === 'undefined') return;
     
     if (statusChartInstance) {
+        // This runs on every poll while the tab is open; don't re-animate the chart
+        // when nothing moved.
+        const prev = statusChartInstance.data.datasets[0].data;
+        if (prev[0] === running && prev[1] === stopped && prev[2] === errored) return;
         statusChartInstance.data.datasets[0].data = [running, stopped, errored];
         statusChartInstance.update();
         return;
@@ -342,21 +371,22 @@ function getStatusHtml(acc) {
     }
     if(acc.status==='Need Guard') return `<span class="st-guard">Guard</span>`;
     if(acc.status==='Logging in...') return `<span class="st-logging">Logging in...</span>`;
-    if(acc.status.includes('Rate Limit')) return `<span class="st-guard" style="cursor:help;" title="${(acc.lastError||'').replace(/"/g, '&quot;')}">${acc.status}</span>`;
-    if (acc.status === 'Error' && acc.lastError) return `<span class="st-stopped" style="cursor:help;" title="${acc.lastError.replace(/"/g, '&quot;')}">ERROR</span>`;
-    return `<span class="st-stopped">${acc.status}</span>`;
+    if(acc.status.includes('Rate Limit')) return `<span class="st-guard" style="cursor:help;" title="${esc(acc.lastError||'')}">${esc(acc.status)}</span>`;
+    if (acc.status === 'Error' && acc.lastError) return `<span class="st-stopped" style="cursor:help;" title="${esc(acc.lastError)}">ERROR</span>`;
+    return `<span class="st-stopped">${esc(acc.status)}</span>`;
 }
 
 function getActionsHtml(acc) {
     const isRunning = acc.status === 'Running';
-    const gamesJson = JSON.stringify(acc.games).replace(/"/g, '&quot;');
-    const profileBtn = acc.steamId ? `<a href="https://steamcommunity.com/profiles/${acc.steamId}" target="_blank" class="icon-btn" title="View Steam Profile"><i class="fa-solid fa-up-right-from-square"></i></a>` : '';
-    
-    const gameCountDisplay = acc.games.length > 32 
-        ? `${acc.games.length} <i class="fa-solid fa-circle-info" title="Rotation Active"></i>` 
+    const gamesJson = esc(JSON.stringify(acc.games));
+    const u = jsArg(acc.username);
+    const profileBtn = acc.steamId ? `<a href="https://steamcommunity.com/profiles/${encodeURIComponent(acc.steamId)}" target="_blank" class="icon-btn" title="View Steam Profile"><i class="fa-solid fa-up-right-from-square"></i></a>` : '';
+
+    const gameCountDisplay = acc.games.length > 32
+        ? `${acc.games.length} <i class="fa-solid fa-circle-info" title="Rotation Active"></i>`
         : `${acc.games.length}/32`;
 
-    return `${isRunning?`<button class="icon-btn btn-stop-action" title="Stop Bot" onclick="handleAction('stop','${acc.username}')"><i class="fa-solid fa-stop"></i></button><button class="icon-btn" title="Restart Bot" onclick="handleAction('restart','${acc.username}')"><i class="fa-solid fa-rotate-right"></i></button>`:`<button class="icon-btn btn-play" title="Start Bot" onclick="handleAction('start','${acc.username}')"><i class="fa-solid fa-play"></i></button>`}<button class="icon-btn" style="width:auto;padding:0 12px;gap:6px;" title="Manage Games" onclick="openGamesModal('${acc.username}', ${gamesJson}, '${acc.customStatus||''}', ${acc.personaState})"><i class="fa-solid fa-gamepad"></i> <span style="font-size:11px;font-weight:600;">${gameCountDisplay}</span></button><button class="icon-btn" title="Boost Statistics" onclick="openStats('${acc.addedAt}', ${acc.boostedHours})"><i class="fa-solid fa-chart-line"></i></button>${profileBtn}<button class="icon-btn" title="Edit Account Details" onclick="openEditModal('${acc.username}', '${acc.category||''}', ${acc.autoStart})"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" title="Delete Account" onclick="deleteAccount('${acc.username}')"><i class="fa-solid fa-trash"></i></button>${acc.status==='Need Guard'?`<button class="icon-btn" style="color:var(--status-yellow);border-color:var(--status-yellow);" title="Enter Steam Guard" onclick="openGuard('${acc.username}')"><i class="fa-solid fa-key"></i></button>`:''}`;
+    return `${isRunning?`<button class="icon-btn btn-stop-action" title="Stop Bot" onclick="handleAction('stop',${u})"><i class="fa-solid fa-stop"></i></button><button class="icon-btn" title="Restart Bot" onclick="handleAction('restart',${u})"><i class="fa-solid fa-rotate-right"></i></button>`:`<button class="icon-btn btn-play" title="Start Bot" onclick="handleAction('start',${u})"><i class="fa-solid fa-play"></i></button>`}<button class="icon-btn" style="width:auto;padding:0 12px;gap:6px;" title="Manage Games" onclick="openGamesModal(${u}, ${gamesJson}, ${jsArg(acc.customStatus||'')}, ${Number(acc.personaState)})"><i class="fa-solid fa-gamepad"></i> <span style="font-size:11px;font-weight:600;">${gameCountDisplay}</span></button><button class="icon-btn" title="Boost Statistics" onclick="openStats(${jsArg(acc.addedAt)}, ${Number(acc.boostedHours)})"><i class="fa-solid fa-chart-line"></i></button>${profileBtn}<button class="icon-btn" title="Edit Account Details" onclick="openEditModal(${u}, ${jsArg(acc.category||'')}, ${!!acc.autoStart})"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" title="Delete Account" onclick="deleteAccount(${u})"><i class="fa-solid fa-trash"></i></button>${acc.status==='Need Guard'?`<button class="icon-btn" style="color:var(--status-yellow);border-color:var(--status-yellow);" title="Enter Steam Guard" onclick="openGuard(${u})"><i class="fa-solid fa-key"></i></button>`:''}`;
 }
 
 window.sortAccounts = function(col) {
@@ -443,7 +473,7 @@ function renderTable(accounts) {
         };
 
         section.className = 'category-section';
-        section.innerHTML = `<div class="category-header" onclick="toggleCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="cat-body-${safeId}"><div class="panel"><table><thead><tr><th style="width:40px;text-align:center;"><input type="checkbox" onchange="toggleCategorySelect(this, ${safeId})"></th><th>User</th><th onclick="sortAccounts('status')" style="cursor:pointer">Status ${getSortIcon('status')}</th><th onclick="sortAccounts('hours')" style="cursor:pointer">Hours ${getSortIcon('hours')}</th><th>IP</th><th>Actions</th></tr></thead><tbody id="tbody-${safeId}"></tbody></table></div></div>`;
+        section.innerHTML = `<div class="category-header" onclick="toggleCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${esc(cat)} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="cat-body-${safeId}"><div class="panel"><table><thead><tr><th style="width:40px;text-align:center;"><input type="checkbox" onchange="toggleCategorySelect(this, ${safeId})"></th><th>User</th><th onclick="sortAccounts('status')" style="cursor:pointer">Status ${getSortIcon('status')}</th><th onclick="sortAccounts('hours')" style="cursor:pointer">Hours ${getSortIcon('hours')}</th><th>IP</th><th>Actions</th></tr></thead><tbody id="tbody-${safeId}"></tbody></table></div></div>`;
         container.appendChild(section);
         const tbody = document.getElementById(`tbody-${safeId}`);
         groups[cat].forEach(acc => tbody.appendChild(createAccountRow(acc)));
@@ -457,7 +487,7 @@ function createAccountRow(acc) {
         tr.id = `tr-${acc.username}`;
         tr.dataset.category = acc.category || 'Default';
         const showEye = (acc.ip && acc.ip !== "Server IP" && acc.ip !== "Loading...") ? '' : 'style="display:none;"';
-        tr.innerHTML = `<td style="text-align:center;"><input type="checkbox" class="acc-select" value="${acc.username}" onchange="updateBulkUI()"></td><td><div class="user-cell"><img src="${avatarUrl}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${acc.nickname||acc.username}</span>${autoStartIcon}</div><span class="user-name">${acc.username}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:var(--text-main);font-weight:600;">${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h</td><td><div class="ip-cell"><span data-ip="${acc.ip}">${maskIp(acc.ip)}</span><i class="fa-solid fa-eye ip-icon" onclick="toggleIp(this)" ${showEye}></i></div></td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
+        tr.innerHTML = `<td style="text-align:center;"><input type="checkbox" class="acc-select" value="${esc(acc.username)}" onchange="updateBulkUI()"></td><td><div class="user-cell"><img src="${esc(avatarUrl)}" class="user-avatar" alt="Avatar"><div class="user-details"><div><span class="user-nick">${esc(acc.nickname||acc.username)}</span>${autoStartIcon}</div><span class="user-name">${esc(acc.username)}</span></div></div></td><td>${getStatusHtml(acc)}</td><td style="color:var(--text-main);font-weight:600;">${parseFloat(acc.grandTotal).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h</td><td><div class="ip-cell"><span data-ip="${esc(acc.ip)}">${esc(maskIp(acc.ip))}</span><i class="fa-solid fa-eye ip-icon" onclick="toggleIp(this)" ${showEye}></i></div></td><td><div class="actions">${getActionsHtml(acc)}</div></td>`;
         return tr;
 }
 
@@ -477,7 +507,7 @@ async function fetchAccounts() {
     } 
 }
 async function fetchLogs() { cachedLogs = await apiCall('/api/logs'); renderLogs(); }
-async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:var(--text-main);">${x.username}</td><td style="color:#888;">${x.role}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser('${x.username}')"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
+async function fetchUsers() { const u = await apiCall('/api/users'); document.getElementById('usersTableBody').innerHTML = u.map(x=>`<tr><td style="color:var(--text-main);">${esc(x.username)}</td><td style="color:#888;">${esc(x.role)}</td><td>${x.role!=='admin'?`<button class="icon-btn btn-trash" onclick="delUser(${jsArg(x.username)})"><i class="fa-solid fa-trash"></i></button>`:''}</td></tr>`).join(''); }
 
 function closeModals() { document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none'); }
 function showConfirm(msg, title="Confirmation") {
@@ -541,7 +571,7 @@ function renderFreeGamesUI() {
                 ownershipBadge = `<div style="position:absolute;top:5px;right:5px;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold;z-index:2;background:var(--status-yellow);color:#000;">${ownedCount}/${selectedAccsData.length} Owned</div>`;
             }
         }
-        return `<div class="game-card ${isSel?'selected':''}" onclick="toggleFreeGame(${g.id})"><img src="https://steamcdn-a.akamaihd.net/steam/apps/${g.id}/capsule_sm_120.jpg" onerror="this.style.display='none'"><div class="game-card-overlay"><div class="game-card-title">${g.name}</div></div>${ownershipBadge}<div class="game-check"><i class="fa-solid fa-check"></i></div></div>`;
+        return `<div class="game-card ${isSel?'selected':''}" onclick="toggleFreeGame(${Number(g.id)})"><img src="https://steamcdn-a.akamaihd.net/steam/apps/${Number(g.id)}/capsule_sm_120.jpg" onerror="this.style.display='none'"><div class="game-card-overlay"><div class="game-card-title">${esc(g.name)}</div></div>${ownershipBadge}<div class="game-check"><i class="fa-solid fa-check"></i></div></div>`;
     }).join('');
 }
 
@@ -567,7 +597,7 @@ function renderFreeAccountsUI() {
         const allSelected = accountsInCat.every(a => selectedFreeAccounts.includes(a.username));
         const section = document.createElement('div');
         section.className = 'category-section';
-        section.innerHTML = `<div class="category-header" onclick="toggleFreeGameCategory(${safeId})"><span><input type="checkbox" onclick="event.stopPropagation(); toggleFreeGameCategorySelect(this, '${cat.replace(/'/g, "\\'")}')" ${allSelected?'checked':''} style="margin-right:10px;"> <i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="free-cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="free-cat-body-${safeId}"><div class="account-selector-list">${groups[cat].map(a => {
+        section.innerHTML = `<div class="category-header" onclick="toggleFreeGameCategory(${safeId})"><span><input type="checkbox" onclick="event.stopPropagation(); toggleFreeGameCategorySelect(this, ${jsArg(cat)})" ${allSelected?'checked':''} style="margin-right:10px;"> <i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${esc(cat)} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="free-cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="free-cat-body-${safeId}"><div class="account-selector-list">${groups[cat].map(a => {
             const isSel = selectedFreeAccounts.includes(a.username);
             const avatar = a.avatarHash ? `https://avatars.steamstatic.com/${a.avatarHash}_full.jpg` : 'https://avatars.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg';
             
@@ -576,7 +606,7 @@ function renderFreeAccountsUI() {
                 const ownsAll = selectedFreeGames.every(gid => (a.ownedGames || []).includes(gid));
                 if (ownsAll) ownershipIcon = '<i class="fa-solid fa-check-double" style="color:var(--status-green);margin-left:auto;font-size:12px;" title="Already owns all selected games"></i>';
             }
-            return `<div class="account-select-item ${isSel?'selected':''}" onclick="toggleFreeAccount('${a.username}')"><img src="${avatar}"><span class="account-select-name">${a.username}</span>${ownershipIcon}</div>`;
+            return `<div class="account-select-item ${isSel?'selected':''}" onclick="toggleFreeAccount(${jsArg(a.username)})"><img src="${esc(avatar)}"><span class="account-select-name">${esc(a.username)}</span>${ownershipIcon}</div>`;
         }).join('')}</div></div>`;
         grid.appendChild(section);
     });
@@ -641,7 +671,8 @@ function openUserModal() { document.getElementById('friendUser').value=''; docum
 function openGuard(u) { document.getElementById('guardUsername').value = u; document.getElementById('guardModal').style.display = 'flex'; }
 function openStats(date, hours) { document.getElementById('statAdded').innerText = new Date(parseInt(date)).toLocaleDateString(); document.getElementById('statBoosted').innerText = parseFloat(hours).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); document.getElementById('statsModal').style.display = 'flex'; }
 
-async function openEditModal(u, cat, auto) { const d = await apiCall('/api/get_account', 'POST', { username: u }); document.getElementById('editOldUsername').value = d.username; document.getElementById('editUsername').value = d.username; document.getElementById('editPassword').value = ''; document.getElementById('editPassword').placeholder = '(Unchanged)'; document.getElementById('editSharedSecret').value = d.sharedSecret; document.getElementById('editProxy').value = d.proxy || ''; document.getElementById('editCategory').value = d.category || cat; document.getElementById('editAutoStart').checked = d.autoStart; document.getElementById('editModal').style.display = 'flex'; }
+
+async function openEditModal(u, cat, auto) { const d = await apiCall('/api/get_account', 'POST', { username: u }); document.getElementById('editOldUsername').value = d.username; document.getElementById('editUsername').value = d.username; document.getElementById('editPassword').value = ''; document.getElementById('editPassword').placeholder = '(Unchanged)'; document.getElementById('editSharedSecret').value = ''; document.getElementById('editSharedSecret').placeholder = d.hasSharedSecret ? '(Unchanged)' : 'None set'; document.getElementById('editProxy').value = d.proxy || ''; document.getElementById('editCategory').value = d.category || cat; document.getElementById('editAutoStart').checked = d.autoStart; document.getElementById('editModal').style.display = 'flex'; }
 async function addAccount() { await apiCall('/api/accounts', 'POST', { username: document.getElementById('newUsername').value, password: document.getElementById('newPassword').value, sharedSecret: document.getElementById('newSharedSecret').value, category: document.getElementById('newCategory').value, autoStart: document.getElementById('newAutoStart').checked }); closeModals(); fetchAccounts(); }
 async function bulkAddAccounts() { const data = document.getElementById('bulkData').value; const cat = document.getElementById('bulkCategory').value; let auto = document.getElementById('bulkAutoStart').checked; const wait = document.getElementById('bulkProxyWait').checked; const bundle = document.getElementById('bulkBundle').value; if(wait) auto = false; const res = await apiCall('/api/accounts/bulk', 'POST', { data, category: cat, autoStart: auto, bundle }); if(res && res.success) { showToast(`Imported ${res.count} accounts${res.skipped > 0 ? ` (${res.skipped} skipped)` : ''}${wait ? '. Add proxies now.' : ''}`, 'fa-check'); closeModals(); fetchAccounts(); } }
 async function saveEdit() { await apiCall('/api/edit', 'POST', { oldUsername: document.getElementById('editOldUsername').value, newUsername: document.getElementById('editUsername').value, newPassword: document.getElementById('editPassword').value, newSharedSecret: document.getElementById('editSharedSecret').value, newCategory: document.getElementById('editCategory').value, newAutoStart: document.getElementById('editAutoStart').checked }); closeModals(); fetchAccounts(); }
@@ -690,7 +721,7 @@ function openGamesModal(u, g, c, s) {
 
 function renderTags() { 
     const b = document.getElementById('selectedGamesBox');
-    b.innerHTML = currentSelectedGames.map(g => `<div class="tag"><span>${g.name}</span><span class="tag-id">${g.id}</span><span class="tag-x" onclick="removeGame(${g.id})">&times;</span></div>`).join('');
+    b.innerHTML = currentSelectedGames.map(g => `<div class="tag"><span>${esc(g.name)}</span><span class="tag-id">${Number(g.id)}</span><span class="tag-x" onclick="removeGame(${Number(g.id)})">&times;</span></div>`).join('');
     const count = currentSelectedGames.length;
     const el = document.getElementById('gameCounter');
     if (count > 32) {
@@ -720,7 +751,7 @@ function initGameSearch() {
             if (libraryMatches.length > 0) {
                 rb.innerHTML += `<div style="padding:5px 10px;font-size:10px;color:#666;text-transform:uppercase;font-weight:bold;">From Library</div>`;
                 libraryMatches.forEach(g => {
-                    rb.innerHTML += `<div class="search-item" onclick="addGame(${g.id}, '${g.name.replace(/'/g, "\\'")}')"><span style="color:var(--status-green)">${g.name}</span> <span style="color:#666;">${g.id}</span></div>`;
+                    rb.innerHTML += `<div class="search-item" onclick="addGame(${Number(g.id)}, ${jsArg(g.name)})"><span style="color:var(--status-green)">${esc(g.name)}</span> <span style="color:#666;">${Number(g.id)}</span></div>`;
                 });
             }
 
@@ -728,7 +759,7 @@ function initGameSearch() {
                 rb.innerHTML += `<div style="padding:5px 10px;font-size:10px;color:#666;text-transform:uppercase;font-weight:bold;border-top:1px solid #333;margin-top:5px;">Global Steam DB</div>`;
                 res.forEach(g => { 
                     if (!libraryMatches.find(l => l.id === g.appid)) {
-                        rb.innerHTML += `<div class="search-item" onclick="addGame(${g.appid}, '${g.name.replace(/'/g, "\\'")}')"><span>${g.name}</span><span style="color:#666;">${g.appid}</span></div>`; 
+                        rb.innerHTML += `<div class="search-item" onclick="addGame(${Number(g.appid)}, ${jsArg(g.name)})"><span>${esc(g.name)}</span><span style="color:#666;">${Number(g.appid)}</span></div>`; 
                     }
                 }); 
             }
@@ -821,7 +852,7 @@ function renderBundlesView() {
         if (q && !k.toLowerCase().includes(q)) continue;
         const card = document.createElement('div');
         card.className = 'bundle-card';
-        card.innerHTML = `<h4>${k}</h4><span>${cachedBundles[k].length} Games</span><div class="bundle-actions"><button class="icon-btn" onclick="openBundleModal('${k}')"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteBundleFromTab('${k}')"><i class="fa-solid fa-trash"></i></button></div>`;
+        card.innerHTML = `<h4>${esc(k)}</h4><span>${cachedBundles[k].length} Games</span><div class="bundle-actions"><button class="icon-btn" onclick="openBundleModal(${jsArg(k)})"><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" onclick="deleteBundleFromTab(${jsArg(k)})"><i class="fa-solid fa-trash"></i></button></div>`;
         c.appendChild(card);
     }
 }
@@ -852,7 +883,7 @@ async function deleteBundleFromTab(name) {
 
 function renderBundleTags() {
     const b = document.getElementById('selectedBundleGamesBox');
-    b.innerHTML = currentBundleGames.map(g => `<div class="tag"><span>${g.name}</span><span class="tag-id">${g.id}</span><span class="tag-x" onclick="removeBundleGame(${g.id})">&times;</span></div>`).join('');
+    b.innerHTML = currentBundleGames.map(g => `<div class="tag"><span>${esc(g.name)}</span><span class="tag-id">${Number(g.id)}</span><span class="tag-x" onclick="removeBundleGame(${Number(g.id)})">&times;</span></div>`).join('');
     const count = currentBundleGames.length;
     const el = document.getElementById('bundleGameCounter');
     if (count > 32) {
@@ -874,7 +905,7 @@ function initBundleGameSearch() {
         st = setTimeout(async()=>{ 
             const res = await apiCall(`/api/search_games?q=${encodeURIComponent(q)}`); 
             const rb = document.getElementById('bundleSearchResults'); rb.innerHTML=''; 
-            if (res.length > 0) res.forEach(g => { rb.innerHTML += `<div class="search-item" onclick="addBundleGame(${g.appid}, '${g.name.replace(/'/g, "\\'")}')"><span>${g.name}</span><span style="color:#666;">${g.appid}</span></div>`; }); 
+            if (res.length > 0) res.forEach(g => { rb.innerHTML += `<div class="search-item" onclick="addBundleGame(${Number(g.appid)}, ${jsArg(g.name)})"><span>${esc(g.name)}</span><span style="color:#666;">${Number(g.appid)}</span></div>`; }); 
             else rb.innerHTML = '<div style="padding:10px;color:#666;text-align:center;font-size:12px;">No results</div>';
             rb.style.display='block'; 
         }, 300); 
@@ -884,16 +915,18 @@ function initBundleGameSearch() {
 function renderLogs() {
     const q = document.getElementById('logSearch').value.toLowerCase();
     const filtered = cachedLogs.filter(l => l.toLowerCase().includes(q));
-    document.getElementById('logsContainer').innerHTML = filtered.map(m=>`<div class="log-line">${m}</div>`).join('');
+    document.getElementById('logsContainer').innerHTML = filtered.map(m=>`<div class="log-line">${esc(m)}</div>`).join('');
 }
 
 function exportLogs() {
     const text = cachedLogs.join('\n');
     const blob = new Blob([text], { type: 'text/plain' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
+    a.href = url;
     a.download = `bruddibooster_logs_${Date.now()}.txt`;
     a.click();
+    URL.revokeObjectURL(url); // the blob is retained for the page's lifetime otherwise
 }
 
 async function clearLogs() {
@@ -1010,7 +1043,7 @@ async function fetchProxiesView() {
         const isExpanded = categoryStates[`proxy-${safeId}`] !== undefined ? categoryStates[`proxy-${safeId}`] : true;
         const section = document.createElement('div');
         section.className = 'category-section';
-        section.innerHTML = `<div class="category-header" onclick="toggleProxyCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${cat} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="proxy-cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="proxy-cat-body-${safeId}"><div class="panel"><table><thead><tr><th>Username</th><th>Proxy (http://user:pass@ip:port)</th><th>Action</th></tr></thead><tbody>${groups[cat].map(a => `<tr><td style="color:var(--text-main);">${a.username}</td><td><input type="text" class="form-input proxy-input" id="proxy-${a.username}" data-user="${a.username}" data-category="${a.category||'Default'}" value="${a.proxy || ''}" placeholder="http://user:pass@ip:port"></td><td><div class="actions"><button class="icon-btn" onclick="checkProxy('${a.username}')" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button><button class="icon-btn" onclick="saveProxy('${a.username}')" title="Apply Proxy"><i class="fa-solid fa-check"></i></button><button class="icon-btn btn-trash" onclick="deleteProxy('${a.username}')" title="Remove Proxy"><i class="fa-solid fa-trash"></i></button></div></td></tr>`).join('')}</tbody></table></div></div>`;
+        section.innerHTML = `<div class="category-header" onclick="toggleProxyCategory(${safeId})"><span><i class="fa-solid fa-folder-open" style="color:var(--accent);margin-right:10px;"></i> ${esc(cat)} <span style="color:var(--text-muted);font-size:12px;margin-left:5px;">(${groups[cat].length})</span></span><i class="fa-solid fa-chevron-up cat-icon ${!isExpanded?'rotated':''}" id="proxy-cat-icon-${safeId}"></i></div><div class="category-body ${!isExpanded?'hidden':''}" id="proxy-cat-body-${safeId}"><div class="panel"><table><thead><tr><th>Username</th><th>Proxy (http://user:pass@ip:port)</th><th>Action</th></tr></thead><tbody>${groups[cat].map(a => `<tr><td style="color:var(--text-main);">${esc(a.username)}</td><td><input type="text" class="form-input proxy-input" id="proxy-${esc(a.username)}" data-user="${esc(a.username)}" data-category="${esc(a.category||'Default')}" value="${esc(a.proxy || '')}" placeholder="http://user:pass@ip:port"></td><td><div class="actions"><button class="icon-btn" onclick="checkProxy(${jsArg(a.username)})" title="Check Proxy"><i class="fa-solid fa-stethoscope"></i></button><button class="icon-btn" onclick="saveProxy(${jsArg(a.username)})" title="Apply Proxy"><i class="fa-solid fa-check"></i></button><button class="icon-btn btn-trash" onclick="deleteProxy(${jsArg(a.username)})" title="Remove Proxy"><i class="fa-solid fa-trash"></i></button></div></td></tr>`).join('')}</tbody></table></div></div>`;
         container.appendChild(section);
     });
 }
