@@ -13,7 +13,24 @@ const BUNDLES_FILE = path.join(DATA_DIR, 'bundles.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const PROXIES_FILE = path.join(DATA_DIR, 'proxies.json');
 
-if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR, { recursive: true });
+// Secrets must not be group- or world-readable. secret.key decrypts every stored
+// password, sessions.json holds live session records, users.json holds password hashes
+// and 2FA secrets. These were all created at the process umask (0664/0775).
+const SECRET_MODE = 0o600;
+const SECRET_DIR_MODE = 0o700;
+function lockDown(file, mode = SECRET_MODE) {
+    try { if (fs.existsSync(file)) fs.chmodSync(file, mode); } catch (e) { /* best effort */ }
+}
+
+if (!fs.existsSync(ACCOUNTS_DIR)) fs.mkdirSync(ACCOUNTS_DIR, { recursive: true, mode: SECRET_DIR_MODE });
+lockDown(ACCOUNTS_DIR, SECRET_DIR_MODE);
+[USERS_FILE, SESSIONS_FILE].forEach(f => lockDown(f));
+try {
+    // Existing account files were written before this and keep their old mode.
+    if (fs.existsSync(ACCOUNTS_DIR)) fs.readdirSync(ACCOUNTS_DIR)
+        .filter(f => f.endsWith('.json'))
+        .forEach(f => lockDown(path.join(ACCOUNTS_DIR, f)));
+} catch (e) {}
 
 let accountsCache = {};
 let accountsLoaded = false;
@@ -25,8 +42,11 @@ let accountsLoaded = false;
 function writeFileAtomic(file, data) {
     const tmp = file + '.' + process.pid + '.tmp';
     try {
-        fs.writeFileSync(tmp, data);
+        // Create the temp file already restricted, so there is no window where the
+        // contents exist at a looser mode.
+        fs.writeFileSync(tmp, data, { mode: SECRET_MODE });
         fs.renameSync(tmp, file);
+        lockDown(file);
     } catch (e) {
         try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) {}
         throw e;
@@ -77,13 +97,23 @@ function getAllAccounts() {
     return Object.values(accountsCache);
 }
 
+// Callers pass whatever arrived in a JSON body, so a missing or non-string username
+// must return null rather than throwing on .toLowerCase() (which surfaced as a 500 on
+// every account route).
+function normaliseUsername(username) {
+    return typeof username === 'string' ? username.trim().toLowerCase() : null;
+}
+
 function getAccount(username) {
     if (!accountsLoaded) loadAllAccounts();
-    return accountsCache[username.toLowerCase()] || null;
+    const key = normaliseUsername(username);
+    if (!key) return null;
+    return accountsCache[key] || null;
 }
 
 function saveAccount(acc) {
     if (!accountsLoaded) loadAllAccounts();
+    if (!acc || !normaliseUsername(acc.username)) return;
     if (!acc.category || acc.category.trim() === "") acc.category = "Default";
     accountsCache[acc.username.toLowerCase()] = acc;
     const d = { ...acc, password: encrypt(acc.password), sharedSecret: encrypt(acc.sharedSecret), refreshToken: encrypt(acc.refreshToken) };
@@ -94,7 +124,8 @@ function saveAccount(acc) {
 
 function deleteAccountFile(user) {
     if (!accountsLoaded) loadAllAccounts();
-    const lower = user.toLowerCase();
+    const lower = normaliseUsername(user);
+    if (!lower) return;
     delete accountsCache[lower];
     const p = path.join(ACCOUNTS_DIR, lower + '.json'); 
     if (fs.existsSync(p)) fs.unlinkSync(p); 

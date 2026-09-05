@@ -9,11 +9,34 @@ const https = require('https');
 const http = require('http');
 const os = require('os');
 
-const { log, getLogs, clearLogs, encrypt, decrypt, captureConsole } = require('./utils');
-const { checkAccountLock, recordFailure, recordSuccess, lockStats, parseCookies, newCsrfToken, safeEqual } = require('./security');
+// --- CONFIG FILE ---
+// Settings live in a .env file next to the app so `npm start` just works, with no
+// environment juggling. Real environment variables still win, so a systemd unit or a
+// one-off `PORT=1234 npm start` can override it.
+(function loadDotEnv() {
+    try {
+        const file = require('path').join(__dirname, '.env');
+        if (!require('fs').existsSync(file)) return;
+        for (const raw of require('fs').readFileSync(file, 'utf8').split('\n')) {
+            const line = raw.trim();
+            if (!line || line.startsWith('#')) continue;
+            const eq = line.indexOf('=');
+            if (eq < 1) continue;
+            const key = line.slice(0, eq).trim();
+            let val = line.slice(eq + 1).trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1);
+            }
+            if (process.env[key] === undefined) process.env[key] = val;
+        }
+    } catch (e) { /* a malformed .env must not stop the server booting */ }
+})();
+
+const { log, getLogs, clearLogs, encrypt, decrypt, captureConsole, getAuditLog } = require('./utils');
+const { checkAccountLock, recordFailure, recordSuccess, lockStats, parseCookies, newCsrfToken, safeEqual, hashToken } = require('./security');
 captureConsole(); // mirror library console.error/warn into the dashboard log
 const { getUsers, saveUsers, getAllAccounts, getAccount, saveAccount, deleteAccountFile, getSessions, saveSessions, getBundles, saveBundles, getSettings, saveSettings, getGlobalProxies, saveGlobalProxies } = require('./data');
-const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts } = require('./bot');
+const { startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts, refreshOwnedApps } = require('./bot');
 
 // 245 Steam clients share this process. A throw from any one of their callbacks
 // would otherwise take down every other bot, so log and keep serving. This is a
@@ -78,7 +101,7 @@ io.use((socket, next) => {
         const cookies = parseCookies({ headers: socket.handshake.headers || {} });
         const token = cookies[SESSION_COOKIE] || (socket.handshake.auth && socket.handshake.auth.token);
         const sessions = getSessions();
-        const sess = token ? sessions[token] : null;
+        const sess = token ? sessions[hashToken(token)] : null;
         if (!sess || sess.expiresAt <= Date.now()) return next(new Error('unauthorized'));
         socket.data.user = { username: sess.username, role: sess.role };
         next();
@@ -99,8 +122,13 @@ io.on('connection', (socket) => {
     rec.role = u.role; rec.sockets++;
     liveUsers.set(u.username, rec);
 
-    // Immediate snapshot so a fresh tab isn't blank until the next tick.
-    socket.emit('accounts', accountsPayloadFor(u));
+    // Full snapshot so a fresh tab isn't blank until the next tick; deltas follow.
+    const snapshot = accountsPayloadFor(u);
+    socket.emit('accounts', snapshot);
+    // Seed the baseline so the next tick diffs against what this tab actually has.
+    const seed = new Map();
+    snapshot.forEach(a => seed.set(a.username, JSON.stringify(a)));
+    lastPushed.set(u.username, seed);
 
     socket.on('disconnect', () => {
         const r = liveUsers.get(u.username);
@@ -139,13 +167,39 @@ app.use((req, res, next) => {
     next();
 });
 
-// Init Bots
+// --- INIT BOTS ---
+// Steam rate-limits logins per IP, so pacing only needs to be per IP. The old code
+// staggered every account by 5s globally, which took 20 minutes for 245 accounts while
+// doing nothing extra for safety. Group by proxy and pace within each group instead:
+// accounts on different IPs start in parallel, accounts sharing one IP still queue.
 const autoStartAccounts = getAllAccounts().filter(acc => acc.autoStart);
-let startDelay = 5000;
+const PER_IP_STAGGER_MS = 5000;
+const CROWDED_IP_WARN = 20;
+
+const byIp = new Map();
 autoStartAccounts.forEach(acc => {
-    setTimeout(() => startBotProcess(acc), startDelay);
-    startDelay += 5000;
+    const key = (acc.proxy || '').trim() || '__server_ip__';
+    if (!byIp.has(key)) byIp.set(key, []);
+    byIp.get(key).push(acc);
 });
+
+let longestQueueMs = 0;
+byIp.forEach((group, key) => {
+    group.forEach((acc, i) => {
+        // A small jitter keeps separate groups from landing in lockstep.
+        const delay = 2000 + (i * PER_IP_STAGGER_MS) + Math.floor(Math.random() * 1500);
+        longestQueueMs = Math.max(longestQueueMs, delay);
+        setTimeout(() => startBotProcess(acc), delay);
+    });
+    if (group.length >= CROWDED_IP_WARN) {
+        const where = key === '__server_ip__' ? 'the server IP (no proxy)' : 'one proxy';
+        log(`${group.length} auto-start accounts share ${where}. Steam rate-limits per IP, so spread them across more proxies.`, "WARN");
+    }
+});
+
+if (autoStartAccounts.length) {
+    log(`Auto-starting ${autoStartAccounts.length} accounts across ${byIp.size} IP(s); last one begins in ~${Math.round(longestQueueMs / 60000)} min.`, "SYSTEM");
+}
 
 // --- SESSION COOKIES ---
 // The token lives in an httpOnly cookie so page scripts can't read it: an XSS bug
@@ -184,14 +238,16 @@ function sessionTokenFrom(req) {
 const requireAuth = (req, res, next) => {
     const token = sessionTokenFrom(req);
     const sessions = getSessions();
-    const sess = token ? sessions[token] : null;
+    // Sessions are keyed by the token's hash; the raw token exists only in the cookie.
+    const key = token ? hashToken(token) : null;
+    const sess = key ? sessions[key] : null;
 
     if (!sess || sess.expiresAt <= Date.now()) {
         // Only touch disk when a real session actually expired. Previously every
         // request with a bad or absent token triggered a synchronous full rewrite of
         // sessions.json, which is a free disk-write amplifier for an unauthenticated
         // caller.
-        if (token && sessions[token]) { delete sessions[token]; saveSessions(sessions); }
+        if (key && sessions[key]) { delete sessions[key]; saveSessions(sessions); }
         clearSessionCookies(req, res);
         return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -210,8 +266,22 @@ const requireAuth = (req, res, next) => {
 
     req.user = sess;
     req.sessionToken = token;
+    req.sessionKey = key;
     next();
 };
+
+// One-time migration: sessions written before tokens were hashed are keyed by the raw
+// token, which is both unusable now and a live credential sitting on disk. A raw token
+// and a SHA-256 are both 64 hex chars so they can't be told apart -- drop the lot and
+// have everyone sign in once more.
+(function migrateSessions() {
+    const sessions = getSessions();
+    const stale = Object.keys(sessions).filter(k => sessions[k] && sessions[k].v !== 2);
+    if (!stale.length) return;
+    stale.forEach(k => delete sessions[k]);
+    saveSessions(sessions);
+    log(`Cleared ${stale.length} pre-hash session(s); those users must sign in again.`, "SYSTEM");
+})();
 
 // Expired sessions used to be pruned only as a side effect of a failed request.
 setInterval(() => { saveSessions(getSessions()); }, 60 * 60 * 1000).unref();
@@ -219,11 +289,17 @@ setInterval(() => { saveSessions(getSessions()); }, 60 * 60 * 1000).unref();
 app.get('/api/verify_session', (req, res) => {
     const token = sessionTokenFrom(req);
     const sessions = getSessions();
-    if (token && sessions[token] && sessions[token].expiresAt > Date.now()) {
+    const key = token ? hashToken(token) : null;
+    const sess = key ? sessions[key] : null;
+    if (sess && sess.expiresAt > Date.now()) {
         // The panel user may have been deleted while this session was still valid.
-        const user = getUsers().find(u => u.username === sessions[token].username);
+        const user = getUsers().find(u => u.username === sess.username);
         if (!user) return res.json({ success: false });
-        res.json({ success: true, role: sessions[token].role, username: sessions[token].username, has2FA: !!user.twoFactorSecret, csrf: sessions[token].csrf });
+        // Re-issue the CSRF cookie so a browser holding an older copy converges instead
+        // of failing every state-changing request until it is reloaded.
+        const secure = isSecureRequest(req) ? '; Secure' : '';
+        res.append('Set-Cookie', `${CSRF_COOKIE}=${sess.csrf}; Path=/; SameSite=Lax${secure}`);
+        res.json({ success: true, role: sess.role, username: sess.username, has2FA: !!user.twoFactorSecret, csrf: sess.csrf });
     } else res.json({ success: false });
 });
 
@@ -261,10 +337,25 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     }
     recordSuccess(username);
 
+    // Flag sign-ins from an address this account hasn't used before. Cheap signal, and
+    // the first thing you want to know if credentials leak.
+    const knownIps = Array.isArray(user.knownIps) ? user.knownIps : [];
+    const ip = String(req.ip || '').slice(0, 45);
+    if (ip && !knownIps.includes(ip)) {
+        knownIps.push(ip);
+        user.knownIps = knownIps.slice(-10);
+        saveUsers(getUsers());
+        if (knownIps.length > 1) {
+            log(`New sign-in location for "${user.username}": ${ip}`, "SECURITY");
+            sendDiscordWebhook("New Login Location", `Panel user **${user.username}** signed in from a new address: \`${ip}\``, 16776960);
+        }
+    }
+
     const st = crypto.randomBytes(32).toString('hex');
     const csrf = newCsrfToken();
     const sessions = getSessions();
-    sessions[st] = { username: user.username, role: user.role, csrf, expiresAt: Date.now() + (7*24*3600*1000) };
+    // Only the hash is persisted; st itself goes to the browser cookie and nowhere else.
+    sessions[hashToken(st)] = { v: 2, username: user.username, role: user.role, csrf, expiresAt: Date.now() + (7*24*3600*1000) };
     saveSessions(sessions);
     setSessionCookies(req, res, st, csrf, !!req.body.remember);
     log(`${user.username} signed in from ${req.ip}`, "AUDIT");
@@ -276,23 +367,55 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 app.post('/api/logout', (req, res) => {
     const token = sessionTokenFrom(req);
     const sessions = getSessions();
-    if (token && sessions[token]) { delete sessions[token]; saveSessions(sessions); }
+    const key = token ? hashToken(token) : null;
+    if (key && sessions[key]) { delete sessions[key]; saveSessions(sessions); }
     clearSessionCookies(req, res);
     res.json({ success: true });
 });
 
 app.use('/api/', apiLimiter, requireAuth);
 
-app.post('/api/library', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); res.json({ games: acc.ownedGames || [] }); });
+app.post('/api/library', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); if (!acc) return res.status(404).json({ games: [] }); res.json({ games: acc.ownedGames || [] }); });
+
+// Force an immediate re-read of the account's owned games from Steam. The dashboard's
+// "Refresh" button in Manage Games called this route, but it was never implemented on
+// the server (a leftover from the abandoned src/ refactor), so the button always
+// failed with a generic error.
+app.post('/api/library/refresh', async (req, res) => {
+    const username = req.body.username;
+    if (!verifyOwner(req, username)) return res.status(403).json({ success: false, error: 'Not allowed' });
+    const acc = getAccount(username);
+    if (!acc) return res.status(404).json({ success: false, error: 'Account not found' });
+
+    const bot = getActiveBots()[username];
+    if (!bot || !bot.client || !bot.client.steamID) {
+        // Steam only tells us the library over a logged-in session.
+        return res.status(409).json({ success: false, error: 'Start the bot first - Steam only reports the library to a signed-in session.' });
+    }
+
+    try {
+        const apps = await refreshOwnedApps(username, bot.client);
+        if (!apps) return res.status(502).json({ success: false, error: 'Steam did not return the library. Try again in a moment.' });
+        forgetAccountCaches(username);
+        log(`${username}: library refreshed on request (${apps.length} games).`, "BOT", username);
+        res.json({ success: true, count: apps.length });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message || 'Refresh failed' });
+    }
+});
 
 app.post('/api/accounts/bulk', bulkLimiter, (req, res) => {
-    const { data, category, autoStart, autoAccept, bundle } = req.body; const lines = data.split(/\r?\n/); let c = 0; let skipped = 0;
+    const { data, category, autoStart, autoAccept, bundle } = req.body;
+    // `data` is a textarea paste; anything else (missing, null, an object) used to
+    // throw on .split and 500.
+    if (typeof data !== 'string' || !data.trim()) return res.status(400).json({ success: false, msg: 'Paste at least one account line.' });
+    const lines = data.split(/\r?\n/); let c = 0; let skipped = 0;
     const bundles = getBundles(); 
     let selectedGames = [730];
     if (bundle === 'none') selectedGames = [];
     else if (bundle && bundles[bundle]) selectedGames = bundles[bundle];
     lines.forEach(l => { const p = l.trim().split(':'); if (p.length >= 2) { if (!getAccount(p[0].trim())) { saveAccount({ username: p[0].trim(), password: p[1].trim(), sharedSecret: p[2]?p[2].trim():"", proxy: p[3]?p[3].trim():"", category: category||"Default", autoStart: !!autoStart, autoAccept: !!autoAccept, games: selectedGames, nickname: null, owner: req.user.username, grandTotal: "0.0", addedAt: Date.now(), boostedHours: 0, personaState: 1 }); c++; } else { skipped++; } } });
-    log(`Bulk added ${c}, skipped ${skipped}`, "SYSTEM"); res.json({ success: true, count: c, skipped });
+    log(`${req.user.username} bulk-added ${c} accounts (${skipped} skipped).`, "AUDIT"); res.json({ success: true, count: c, skipped });
 });
 app.post('/api/accounts/export', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
@@ -445,6 +568,7 @@ function accountsPayloadFor(user) {
             status: b ? b.status : 'Stopped',
             lastError: b ? b.lastError : null,
             nextRotation: b ? b.nextRotation : null,
+            nextRetry: b ? b.nextRetry || null : null,
             grandTotal: acc.grandTotal || "0.0", steamId: acc.steamId || null, games: resolveGames(acc),
             customStatus: acc.customStatus || "", addedAt: acc.addedAt || Date.now(), boostedHours: acc.boostedHours || 0,
             personaState: acc.personaState !== undefined ? acc.personaState : 1, category: acc.category || "Default",
@@ -467,23 +591,57 @@ app.get('/api/accounts', (req, res) => res.json(accountsPayloadFor(req.user)));
 // The dashboard used to re-fetch every account every few seconds per open tab. Now
 // the server builds each user's payload once per tick and pushes it only when it
 // actually changed, so an idle panel costs nothing.
-const lastPushed = new Map(); // username -> JSON string of the last payload sent
+// Per-user snapshot of what each dashboard already has, so we can push only what
+// changed. Sending the whole list every 3s was ~283 KB per tick at 245 accounts
+// (~340 MB/hour per open tab) even when nothing moved -- painful over mobile data.
+const lastPushed = new Map(); // username -> Map(account -> JSON of that account)
+
+function diffAccounts(prev, next) {
+    const changed = [];
+    const seen = new Set();
+    for (const acc of next) {
+        seen.add(acc.username);
+        const json = JSON.stringify(acc);
+        if (prev.get(acc.username) !== json) { changed.push(acc); prev.set(acc.username, json); }
+    }
+    const removed = [];
+    for (const name of prev.keys()) if (!seen.has(name)) { removed.push(name); prev.delete(name); }
+    return { changed, removed };
+}
+
 setInterval(() => {
     if (liveUsers.size === 0) return;
     for (const [username, rec] of liveUsers) {
         let payload;
         try { payload = accountsPayloadFor({ username, role: rec.role }); }
         catch (e) { continue; }
-        const json = JSON.stringify(payload);
-        if (lastPushed.get(username) === json) continue; // nothing changed for this audience
-        lastPushed.set(username, json);
-        io.to(`user:${username}`).emit('accounts', payload);
+
+        let prev = lastPushed.get(username);
+        if (!prev) { prev = new Map(); lastPushed.set(username, prev); }
+
+        const { changed, removed } = diffAccounts(prev, payload);
+        if (!changed.length && !removed.length) continue; // nothing moved: send nothing
+        io.to(`user:${username}`).emit('accounts_delta', { changed, removed });
     }
 }, 3000).unref();
 function verifyOwner(req, username) { if (req.user.role === 'admin') return true; const acc = getAccount(username); return acc && acc.owner === req.user.username; }
-app.post('/api/start', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); startBotProcess(getAccount(req.body.username)); res.json({ success: true }); });
+app.post('/api/start', (req, res) => {
+    if (!verifyOwner(req, req.body.username)) return res.status(403).json({});
+    const acc = getAccount(req.body.username);
+    if (!acc) return res.status(404).json({ error: 'Account not found' });
+    startBotProcess(acc);
+    res.json({ success: true });
+});
 app.post('/api/stop', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); res.json({ success: true }); });
-app.post('/api/restart', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); setTimeout(() => { startBotProcess(getAccount(req.body.username)); }, 1000); res.json({ success: true }); });
+app.post('/api/restart', (req, res) => {
+    if (!verifyOwner(req, req.body.username)) return res.status(403).json({});
+    const username = req.body.username;
+    if (!getAccount(username)) return res.status(404).json({ error: 'Account not found' });
+    stopBot(username);
+    // Re-read on the timer: the account could be deleted during the pause.
+    setTimeout(() => { const acc = getAccount(username); if (acc) startBotProcess(acc); }, 1000);
+    res.json({ success: true });
+});
 app.post('/api/steamguard', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); const b = getActiveBots()[req.body.username]; if (b && b.guardCallback) { b.guardCallback(req.body.code); b.status = 'Verifying...'; b.guardCallback = null; res.json({ success: true }); } else res.status(400).json({}); });
 app.post('/api/restart_all', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
@@ -525,9 +683,12 @@ app.post('/api/panic', (req, res) => {
     log(`Panic Stop triggered. Stopped ${count} bots.`, "SYSTEM", req.user.username);
     res.json({ success: true, count });
 });
-app.post('/api/games', (req, res) => { 
-    if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); 
-    const acc = getAccount(req.body.username); 
+app.post('/api/games', (req, res) => {
+    if (!verifyOwner(req, req.body.username)) return res.status(403).json({});
+    const acc = getAccount(req.body.username);
+    // verifyOwner short-circuits to true for admins without checking existence, so an
+    // unknown username reached this line and threw.
+    if (!acc) return res.status(404).json({ error: 'Account not found' });
     acc.games = (req.body.games || []).filter(id => Number.isInteger(id) && id > 0 && id < 2147483647);
     acc.customStatus = req.body.customStatus || ""; acc.personaState = parseInt(req.body.personaState); 
     saveAccount(acc); 
@@ -589,7 +750,16 @@ app.post('/api/games/free_license', bulkLimiter, (req, res) => {
         io.emit('free_games_progress', { processed: total, total, stats, complete: true });
     })();
 });
-app.post('/api/delete', (req, res) => { if (!verifyOwner(req, req.body.username)) return res.status(403).json({}); stopBot(req.body.username); deleteAccountFile(req.body.username); forgetAccountCaches(req.body.username); delete getActiveBots()[req.body.username]; res.json({ success: true }); });
+app.post('/api/delete', (req, res) => {
+    if (!verifyOwner(req, req.body.username)) return res.status(403).json({});
+    stopBot(req.body.username);
+    deleteAccountFile(req.body.username);
+    forgetAccountCaches(req.body.username);
+    delete getActiveBots()[req.body.username];
+    // Destructive and irreversible, so it belongs in the persistent audit trail.
+    log(`${req.user.username} deleted account "${req.body.username}".`, "AUDIT");
+    res.json({ success: true });
+});
 app.post('/api/get_account', (req, res) => { if(!verifyOwner(req, req.body.username)) return res.status(403).json({}); const acc = getAccount(req.body.username); if (!acc) return res.status(404).json({}); res.json({ username: acc.username, hasSharedSecret: !!acc.sharedSecret, proxy: acc.proxy || '', category: acc.category || '', autoStart: !!acc.autoStart, autoAccept: !!acc.autoAccept, autoReclaim: !!acc.autoReclaim, hasRefreshToken: !!acc.refreshToken, scheduleEnabled: !!acc.scheduleEnabled, scheduleStart: acc.scheduleStart || '', scheduleEnd: acc.scheduleEnd || '' }); });
 app.post('/api/settings/password', async (req, res) => {
     const users = getUsers();
@@ -601,7 +771,7 @@ app.post('/api/settings/password', async (req, res) => {
     // Invalidate this user's other sessions; a password change should log out anyone
     // holding an older token. The caller keeps the session they are using.
     const sessions = getSessions();
-    const keep = req.sessionToken;
+    const keep = req.sessionKey;
     let revoked = 0;
     for (const t in sessions) { if (sessions[t].username === u.username && t !== keep) { delete sessions[t]; revoked++; } }
     saveSessions(sessions);
@@ -620,6 +790,14 @@ app.get('/api/logs', (req, res) => {
     // Objects, not bare strings, so the UI can filter by account.
     res.json(logs.map(l => ({ text: l.text, relatedUser: l.relatedUser || null })));
 });
+// Security events that survive a restart: logins, failed logins, lockouts, credential
+// exports, account and user deletions. Deliberately admin-only and not clearable from
+// the UI -- an audit trail an attacker can wipe is not an audit trail.
+app.get('/api/audit', (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json([]);
+    res.json(getAuditLog(300));
+});
+
 app.post('/api/logs/clear', (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({});
     clearLogs();
@@ -846,9 +1024,18 @@ server.on('error', (err) => {
     process.exit(1);
 });
 const PORT = Number(process.env.PORT) || 3000;
-server.listen(PORT, () => {
+// Behind nginx, bind to loopback so the panel isn't reachable directly on :3000 --
+// otherwise anyone can bypass the proxy's TLS and rate limiting. Defaults to all
+// interfaces so existing setups are unchanged.
+const HOST = process.env.HOST || '0.0.0.0';
+server.listen(PORT, HOST, () => {
     const limitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1048576);
-    log(`BruddiBooster v18 Running on ${PORT} (heap limit ${limitMB} MB, Node ${process.version})`, "SYSTEM");
+    log(`BruddiBooster v18 Running on ${HOST}:${PORT} (heap limit ${limitMB} MB, Node ${process.version})`, "SYSTEM");
+    if (HOST === '0.0.0.0' && process.env.TRUST_PROXY) {
+        // Loopback is only the right answer when the proxy runs on this same machine;
+        // suggesting it blindly breaks setups where the proxy is another host.
+        log(`Listening on all interfaces, so port ${PORT} is reachable directly and bypasses the proxy. If your proxy is on this machine, set HOST=127.0.0.1 in .env; if it is another machine, firewall the port to it instead.`, "WARN");
+    }
     if (limitMB < 2500) log(`Heap limit is ${limitMB} MB. Start via "npm start" (or add --max-old-space-size=3072) for more headroom.`, "WARN");
 });
 

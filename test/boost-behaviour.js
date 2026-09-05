@@ -193,7 +193,103 @@ async function login(username, ownedAppIds, playtimeMinutes) {
         bot.getActiveBots()['badguard'].status === 'Bad Guard Code',
         'status=' + bot.getActiveBots()['badguard'].status);
 
-    // 9. Scheduling: windows may wrap past midnight.
+    // 9. "In use elsewhere": you launched the game yourself. The bot must keep trying
+    //    so it resumes on its own, but back off instead of hammering Steam every 30s
+    //    (which is what earns a rate limit).
+    seed('elsewhere', [730]);
+    bot.startBotProcess(data.getAccount('elsewhere'));
+    let ec = bot.getActiveBots()['elsewhere'].client;
+    const waits = [];
+    for (let i = 0; i < 6; i++) {
+        const before = vnow;
+        ec.emit('error', Object.assign(new Error('LoggedInElsewhere'), { eresult: 6 }));
+        await drain();
+        const b3 = bot.getActiveBots()['elsewhere'];
+        if (i === 0) {
+            check('status reads as in-use, not an error', b3.status === 'Playing elsewhere', 'status=' + b3.status);
+            check('a resume time is published for the UI', typeof b3.nextRetry === 'number', 'nextRetry=' + b3.nextRetry);
+        }
+        // Walk forward until it retries and produces a new client.
+        await advance(11 * 60 * 1000);
+        waits.push(vnow - before);
+        ec = bot.getActiveBots()['elsewhere'].client;
+        if (!ec) break;
+    }
+    check('it never gives up (still retrying after 6 conflicts)', !!ec, 'client=' + !!ec);
+    const attempts = bot.getActiveBots()['elsewhere'].elsewhereAttempts;
+    check('each conflict escalates the wait', attempts >= 5, 'attempts=' + attempts);
+
+    //    A successful login resets the ladder.
+    if (ec) { ec.becomeLoggedOn(); await drain(); }
+    check('reconnecting resets the backoff',
+        bot.getActiveBots()['elsewhere'].elsewhereAttempts === 0,
+        'attempts=' + bot.getActiveBots()['elsewhere'].elsewhereAttempts);
+    check('and clears the resume countdown',
+        !bot.getActiveBots()['elsewhere'].nextRetry,
+        'nextRetry=' + bot.getActiveBots()['elsewhere'].nextRetry);
+    bot.stopBot('elsewhere');
+
+    //    Stopping it by hand must cancel the retry loop.
+    seed('elsewhere2', [730]);
+    bot.startBotProcess(data.getAccount('elsewhere2'));
+    bot.getActiveBots()['elsewhere2'].client.emit('error', Object.assign(new Error('x'), { eresult: 6 }));
+    await drain();
+    bot.stopBot('elsewhere2');
+    await advance(20 * 60 * 1000);
+    check('a manual stop cancels the retry loop',
+        !bot.getActiveBots()['elsewhere2'].client &&
+        bot.getActiveBots()['elsewhere2'].status === 'Stopped',
+        'status=' + bot.getActiveBots()['elsewhere2'].status);
+
+    // 10. A disconnect caused by you playing must not burn the crash budget, and a
+    //     bot that does crash out must eventually be retried.
+    seed('kicked', [730]);
+    bot.startBotProcess(data.getAccount('kicked'));
+    let kc = bot.getActiveBots()['kicked'].client;
+    kc.becomeLoggedOn(); await drain();
+    kc.emit('disconnected', 6, 'Logged in elsewhere');
+    await drain();
+    let kb = bot.getActiveBots()['kicked'];
+    check('being kicked for playing is treated as in-use, not a crash',
+        kb.status === 'Playing elsewhere', 'status=' + kb.status);
+    check('it does not consume a restart attempt', (kb.restartCount || 0) === 0, 'restartCount=' + kb.restartCount);
+
+    //     Repeated kicks must never reach 'Crashed'.
+    for (let i = 0; i < 5; i++) {
+        await advance(11 * 60 * 1000);
+        const c = bot.getActiveBots()['kicked'].client;
+        if (!c) break;
+        c.emit('disconnected', 6, 'Logged in elsewhere');
+        await drain();
+    }
+    check('repeated kicks never park the account at Crashed',
+        bot.getActiveBots()['kicked'].status === 'Playing elsewhere',
+        'status=' + bot.getActiveBots()['kicked'].status);
+    bot.stopBot('kicked');
+
+    //     A genuine crash still gives up, but the watchdog retries it later.
+    seed('crashy', [730], { autoStart: true });
+    bot.startBotProcess(data.getAccount('crashy'));
+    for (let i = 0; i < 5; i++) {
+        const c = bot.getActiveBots()['crashy'].client;
+        if (!c) break;
+        c.becomeLoggedOn(); await drain();
+        c.emit('disconnected', 3, 'NoConnection');
+        await advance(70 * 1000);
+    }
+    check('a real crash still stops after the restart budget',
+        bot.getActiveBots()['crashy'].status === 'Crashed',
+        'status=' + bot.getActiveBots()['crashy'].status);
+    // The virtual clock drives timers but not Date.now(), so back-date the crash the
+    // same way the stuck-login case does.
+    bot.getActiveBots()['crashy'].crashedAt = Date.now() - (45 * 60 * 1000);
+    await advance(61 * 60 * 1000);   // one watchdog tick
+    check('the watchdog revives a crashed bot rather than leaving it dead',
+        bot.getActiveBots()['crashy'].status !== 'Crashed',
+        'status=' + bot.getActiveBots()['crashy'].status);
+    bot.stopBot('crashy');
+
+    // 11. Scheduling: windows may wrap past midnight.
     const sched = (start, end, hh, mm) => bot.isWithinSchedule(
         { scheduleEnabled: true, scheduleStart: start, scheduleEnd: end },
         new Date(2026, 0, 1, hh, mm));
@@ -214,7 +310,7 @@ async function login(username, ownedAppIds, playtimeMinutes) {
         bot.getActiveBots()['scheduled'].status === 'Off schedule',
         'status=' + bot.getActiveBots()['scheduled'].status);
 
-    // 10. Hours history builds a daily series.
+    // 12. Hours history builds a daily series.
     const hAcc = seed('hist', [730], { grandTotal: '12.5' });
     bot.recordDailyHours(hAcc);
     bot.recordDailyHours(hAcc);   // same day must not duplicate
@@ -225,7 +321,7 @@ async function login(username, ownedAppIds, playtimeMinutes) {
     check('same-day refresh updates in place', hAcc.history.length === 1 && hAcc.history[0].h === 20,
         JSON.stringify(hAcc.history));
 
-    // 11. Stop actually stops.
+    // 13. Stop actually stops.
     bot.stopBot('basic');
     check('stopBot clears the client', !bot.getActiveBots()['basic'].client);
     check('stopBot reports Stopped', bot.getActiveBots()['basic'].status === 'Stopped');

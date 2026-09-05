@@ -92,6 +92,14 @@ function parseCookies(req) {
 
 function newCsrfToken() { return crypto.randomBytes(24).toString('hex'); }
 
+// Session tokens are stored hashed, never in the clear. sessions.json previously held
+// working bearer tokens: anyone who could read that file (it was mode 664) could take
+// over an account without the password. A plain SHA-256 is right here -- the token is
+// 32 random bytes, so there is nothing to brute force and no need for a slow KDF.
+function hashToken(token) {
+    return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
 // Timing-safe compare that tolerates differing lengths.
 function safeEqual(a, b) {
     if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -102,5 +110,5 @@ function safeEqual(a, b) {
 
 module.exports = {
     checkAccountLock, recordFailure, recordSuccess, lockStats,
-    parseCookies, newCsrfToken, safeEqual
+    parseCookies, newCsrfToken, safeEqual, hashToken
 };

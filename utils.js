@@ -13,9 +13,38 @@ function log(msg, type='INFO', relatedUser=null) {
     const timestamp = new Date().toLocaleTimeString('en-US',{hour12:false});
     const entry = `[${timestamp}] [${type}] ${msg}`;
     console.log(entry);
+    appendAudit(type, msg);
     systemLogs.unshift({ text: entry, relatedUser });
     if(systemLogs.length > MAX_LOGS) systemLogs.splice(MAX_LOGS);
     if (logListener) logListener({ text: entry, relatedUser });
+}
+
+// --- PERSISTENT AUDIT TRAIL ---
+// The log view is a 1000-entry in-memory ring buffer, so every AUTH/AUDIT record --
+// logins, failed logins, credential exports, account deletions -- vanished on restart.
+// Security-relevant lines are also appended to a file that survives, with a size cap
+// and one rotation so it can't grow without bound.
+const AUDIT_FILE = path.join(process.env.HB_DATA_DIR || __dirname, 'audit.log');
+const AUDIT_MAX_BYTES = 5 * 1024 * 1024;
+const AUDIT_TYPES = new Set(['AUDIT', 'AUTH', 'SECURITY']);
+
+function appendAudit(type, msg) {
+    if (!AUDIT_TYPES.has(type)) return;
+    try {
+        try {
+            const st = fs.statSync(AUDIT_FILE);
+            if (st.size > AUDIT_MAX_BYTES) fs.renameSync(AUDIT_FILE, AUDIT_FILE + '.1');
+        } catch (e) { /* no file yet */ }
+        const line = `${new Date().toISOString()} [${type}] ${msg}\n`;
+        fs.appendFileSync(AUDIT_FILE, line, { mode: 0o600 });
+    } catch (e) { /* logging must never break the caller */ }
+}
+
+function getAuditLog(limit = 200) {
+    try {
+        const raw = fs.readFileSync(AUDIT_FILE, 'utf8');
+        return raw.trim().split('\n').filter(Boolean).slice(-limit).reverse();
+    } catch (e) { return []; }
 }
 
 function getLogs() { return systemLogs; }
@@ -57,8 +86,11 @@ if (fs.existsSync(KEY_FILE)) {
     ENCRYPTION_KEY = Buffer.from(fs.readFileSync(KEY_FILE, 'utf8'), 'hex');
 } else {
     ENCRYPTION_KEY = crypto.randomBytes(32);
-    fs.writeFileSync(KEY_FILE, ENCRYPTION_KEY.toString('hex'));
+    fs.writeFileSync(KEY_FILE, ENCRYPTION_KEY.toString('hex'), { mode: 0o600 });
 }
+// This key decrypts every stored account password; it must not be readable by other
+// users on the box. Applied on every start so an existing loose key is corrected.
+try { fs.chmodSync(KEY_FILE, 0o600); } catch (e) {}
 
 function encrypt(text) {
     if (!text) return text;
@@ -81,4 +113,4 @@ function decrypt(text) {
     } catch (e) { return text; }
 }
 
-module.exports = { log, getLogs, clearLogs, encrypt, decrypt, setLogListener, captureConsole };
+module.exports = { log, getLogs, clearLogs, encrypt, decrypt, setLogListener, captureConsole, getAuditLog };

@@ -647,3 +647,86 @@ input:checked + .slider:before { transform: translateX(17px); }
 .acc-flag.danger { color: var(--status-red); }
 .acc-flag.warn { color: var(--status-yellow); }
 .acc-flag.ok { color: var(--status-green); opacity: .75; }
+
+/* --- Batch test progress panel (proxy manager) --- */
+.test-panel {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px;
+}
+.test-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.test-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 9px; }
+.test-title i { color: var(--accent); }
+.test-count { font-size: 13px; font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.test-bar { height: 6px; border-radius: 3px; background: var(--bg-dark); overflow: hidden; }
+.test-bar-fill { height: 100%; width: 0%; border-radius: 3px; background: var(--gradient); transition: width .25s var(--ease); }
+.test-tallies { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; font-size: 12.5px; }
+.tally { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); }
+.tally b { font-variant-numeric: tabular-nums; font-size: 13px; }
+.tally.ok b, .tally.ok i { color: var(--status-green); }
+.tally.warn b, .tally.warn i { color: var(--status-yellow); }
+.tally.bad b, .tally.bad i { color: var(--status-red); }
+.tally.muted b { color: var(--text-dim); }
+.test-faillist {
+    margin-top: 12px; max-height: 130px; overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    color: var(--text-muted); display: none;
+}
+.test-faillist.show { display: block; }
+.test-faillist div { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.test-faillist div:last-child { border-bottom: none; }
+
+/* Per-row proxy result, so scrolling the list is informative too */
+.proxy-state { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.proxy-state.ok { background: rgba(52,211,153,.13); color: var(--status-green); }
+.proxy-state.bad { background: rgba(251,95,109,.12); color: var(--status-red); }
+.proxy-state.swapped { background: rgba(251,191,36,.13); color: var(--status-yellow); }
+.proxy-state.testing { background: var(--accent-soft); color: var(--accent); }
+
+/* --- Hints --- */
+.hint-icon {
+    color: var(--text-muted); font-size: 12px; margin-left: 6px;
+    cursor: help; transition: color .15s var(--ease);
+}
+.hint-icon:hover { color: var(--accent); }
+.hint-pop {
+    position: fixed; z-index: 4000; display: none;
+    background: var(--bg-elevated); color: var(--text-dim);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+    padding: 11px 13px; font-size: 12.5px; line-height: 1.55;
+    box-shadow: var(--shadow-lg); pointer-events: none;
+}
+
+/* --- Feature reference cards (FAQ tab) --- */
+.feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.feature-card {
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 15px 16px;
+}
+.feature-card h4 {
+    margin: 0 0 6px; font-size: 13.5px; font-weight: 650; color: var(--text-main);
+    display: flex; align-items: center; gap: 9px;
+}
+.feature-card h4 i { color: var(--accent); font-size: 13px; width: 16px; text-align: center; }
+.feature-card p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
+.feature-card .where { display: block; margin-top: 8px; font-size: 11px; color: var(--text-muted); opacity: .8; }
+
+/* Compact "rotating" marker used where a full explanation would not fit */
+.rot-badge {
+    display: inline-block; margin-left: 6px; padding: 1px 7px;
+    background: var(--accent-soft); color: var(--accent);
+    border-radius: 999px; font-size: 9.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em; vertical-align: middle;
+}
+
+/* "In use elsewhere": you are on the account yourself. Expected and self-healing,
+   so it reads as informational rather than as a failure. */
+.st-elsewhere {
+    padding: 4px 11px; border-radius: 999px; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em;
+    display: inline-flex; align-items: center; gap: 6px;
+    min-width: 92px; justify-content: center; white-space: nowrap;
+    background: var(--accent-soft); color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.st-elsewhere::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }

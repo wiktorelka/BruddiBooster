@@ -7,4 +7,7 @@ config.json
 package-lock.json
 settings.json
 database.db
-*.db
+*.dbaudit.log
+audit.log.1
+proxies.json
+.env

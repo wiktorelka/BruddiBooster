@@ -41,6 +41,93 @@ function esc(s) {
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+// --- HINTS ---
+// Native title= tooltips are slow to appear, truncate awkwardly and can't wrap, which
+// is why the existing ones were single cryptic sentences. This renders a styled
+// tooltip that can hold a real explanation.
+const HINTS = {
+    rotation:
+        "Steam only lets an account show 32 games at once. With more than 32 selected the bot plays them in batches of 32 and swaps batches on the rotation interval (Settings > Rotation Interval, default 60 min), so every game keeps accruing hours \u2014 just not simultaneously.",
+    autoStart:
+        "Start this account automatically when the panel boots, and restart it after a crash. Turn it off for accounts you only run manually.",
+    autoAccept:
+        "Automatically accept incoming Steam friend requests on this account. Useful for trading or level-boosting accounts; leave off if you don't want strangers added.",
+    autoReclaim:
+        "If you launch a game on your own PC, Steam hands the play session to that device and this bot silently stops earning hours. With this on, the bot takes the session back \u2014 which will close the game you just started. Leave it off unless the account is purely a bot.",
+    schedule:
+        "Only boost between these times each day. Windows may cross midnight (e.g. 22:00\u201306:00). The bot starts and stops itself at the boundaries; outside the window it shows 'Off schedule'.",
+    personaState:
+        "How the account appears to friends while boosting: Online, Away, Busy, Snooze, or Invisible. Invisible still accrues hours but hides the activity.",
+    customStatus:
+        "A free-text 'non-Steam game' name shown as the title on the profile, above the real games. Leave blank to show only actual games.",
+    proxy:
+        "Route this account's Steam connection through a proxy, so accounts don't all share one IP. Format: http://user:pass@ip:port. Too many accounts on one IP is what triggers Steam's rate limits.",
+    proxyPool:
+        "Spare proxies used automatically. When an account is rate-limited or crashes repeatedly, the bot swaps it onto a random proxy from this pool. One per line.",
+    bundle:
+        "A saved, named list of games you can apply to many accounts at once, instead of picking games per account.",
+    freeGames:
+        "Adds free-to-play licences to accounts in bulk so they can then be idled. Games already owned are skipped; region-locked ones are reported and dropped.",
+    refreshToken:
+        "This account signs in with a token Steam issued, so its password is never re-sent. That means far fewer rate limits and Steam Guard emails on restarts.",
+    elsewhere:
+        "You are signed in to this account somewhere else, so Steam ended the bot's session. Nothing is broken \u2014 the bot keeps checking and starts boosting again on its own once you close Steam or the game. It waits progressively longer between checks (up to 10 minutes) so Steam doesn't rate-limit the account.",
+    blocked:
+        "The bot is connected but another session owns the play state \u2014 usually you playing on your own PC. No hours are accruing until that session ends, or the bot reclaims it (see 'Reclaim session' in the account's edit dialog).",
+    heap:
+        "Memory used by the panel process against Node's limit. Turns amber past 70% and red past 85%; you'll also get a log line and a Discord alert at 85%.",
+    backup:
+        "Downloads categories, games, bundles, proxies, schedules and hour history as JSON. Passwords, shared secrets and login tokens are never included, so the file is safe to store off-box.",
+    bulkProxyWait:
+        "Import the accounts with auto-start enabled but don't launch them yet, so you can assign proxies first. Prevents a burst of same-IP logins that would rate-limit you.",
+    hideOwned:
+        "Hide accounts that already own every selected game, so the list only shows accounts the operation would actually change."
+};
+
+function hint(key, extraStyle) {
+    const text = HINTS[key];
+    if (!text) return '';
+    return `<i class="fa-solid fa-circle-info hint-icon" data-hint="${esc(text)}"${extraStyle ? ` style="${extraStyle}"` : ''}></i>`;
+}
+
+let hintEl = null;
+function initHints(root) {
+    // Static markup declares data-hint-key so the copy lives in one place (HINTS)
+    // rather than being duplicated into index.html.
+    root.querySelectorAll('[data-hint-key]').forEach(el => {
+        const t = HINTS[el.getAttribute('data-hint-key')];
+        if (t) el.setAttribute('data-hint', t);
+    });
+
+    const show = (target) => {
+        const text = target.getAttribute('data-hint');
+        if (!text) return;
+        if (!hintEl) {
+            hintEl = document.createElement('div');
+            hintEl.className = 'hint-pop';
+            document.body.appendChild(hintEl);
+        }
+        hintEl.textContent = text;
+        hintEl.style.display = 'block';
+        const r = target.getBoundingClientRect();
+        const w = Math.min(320, window.innerWidth - 24);
+        hintEl.style.width = w + 'px';
+        // Keep it on screen near the icon.
+        let left = r.left + r.width / 2 - w / 2;
+        left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
+        hintEl.style.left = left + 'px';
+        const h = hintEl.offsetHeight;
+        hintEl.style.top = (r.top - h - 10 > 8 ? r.top - h - 10 : r.bottom + 10) + 'px';
+    };
+    const hide = () => { if (hintEl) hintEl.style.display = 'none'; };
+
+    root.addEventListener('mouseover', e => { const t = e.target.closest('[data-hint]'); if (t) show(t); });
+    root.addEventListener('mouseout', e => { if (e.target.closest('[data-hint]')) hide(); });
+    root.addEventListener('focusin', e => { const t = e.target.closest('[data-hint]'); if (t) show(t); });
+    root.addEventListener('focusout', hide);
+    window.addEventListener('scroll', hide, true);
+}
+
 // --- DELEGATED EVENT DISPATCH ---
 // Inline on*= attributes require CSP script-src-attr 'unsafe-inline', which is
 // exactly what an injected attribute needs to run. Markup now carries data-act (a
@@ -55,48 +142,6 @@ function act(fn, ...args) {
     return out;
 }
 
-function resolveAction(name) {
-    if (!ACTIONS.has(name)) { console.warn('Blocked unknown action:', name); return null; }
-    const fn = window[name];
-    if (typeof fn !== 'function') { console.warn('Action not defined:', name); return null; }
-    return fn;
-}
-
-function runAction(el, ev) {
-    const name = el.getAttribute('data-act');
-    if (!name) return;
-    const fn = resolveAction(name);
-    if (!fn) return;
-    let args = [];
-    const raw = el.getAttribute('data-a');
-    if (raw) { try { args = JSON.parse(raw); } catch (e) { args = []; } }
-    args = args.map(a => a === '$this' ? el : a === '$event' ? ev : a);
-    if (el.hasAttribute('data-stop')) ev.stopPropagation();
-    fn.apply(el, args);
-}
-
-function initDelegatedEvents(root) {
-    root.addEventListener('click', (ev) => {
-        const el = ev.target.closest('[data-act]');
-        if (el && root.contains(el)) runAction(el, ev);
-    });
-    root.addEventListener('change', (ev) => {
-        const el = ev.target.closest('[data-act-change]');
-        if (!el) return;
-        const name = el.getAttribute('data-act-change');
-        const fn = resolveAction(name);
-        if (!fn) return;
-        let args = [];
-        const raw = el.getAttribute('data-a');
-        if (raw) { try { args = JSON.parse(raw); } catch (e) { args = []; } }
-        fn.apply(el, args.map(a => a === '$this' ? el : a === '$event' ? ev : a));
-    });
-    // Broken avatars: error doesn't bubble, so listen in the capture phase.
-    root.addEventListener('error', (ev) => {
-        const t = ev.target;
-        if (t && t.tagName === 'IMG' && t.hasAttribute('data-hide-on-error')) t.style.display = 'none';
-    }, true);
-}
 
 function jsArg(s) {
     return esc(JSON.stringify(String(s == null ? '' : s)));
@@ -169,95 +214,10 @@ const POPULAR_FREE_GAMES = [
 ];
 
 
-// Allow-list of action names the delegated dispatcher may invoke. Held as strings and
-// resolved against the global scope at dispatch time: several handlers are assigned
-// via `window.x = function` further down the file, so referencing them directly here
-// would throw before those lines run.
-const ACTIONS = new Set([
-    'addAccount',
-    'addAllLibraryGames',
-    'addBundle',
-    'addBundleGame',
-    'addGame',
-    'addPanelUser',
-    'bulkAction',
-    'bulkAddAccounts',
-    'changePassword',
-    'checkProxy',
-    'clearAllGames',
-    'clearLogs',
-    'closeModals',
-    'delUser',
-    'deleteAccount',
-    'deleteBundleFromTab',
-    'deleteProxy',
-    'disable2FA',
-    'downloadBackup',
-    'enable2FA',
-    'exportAccounts',
-    'exportLogs',
-    'fetchLogs',
-    'handleAction',
-    'hideEl',
-    'loadBundle',
-    'loadFreeGamesPreset',
-    'logout',
-    'onAccSelect',
-    'openBulkEditModal',
-    'openBulkProxyModal',
-    'openBundleModal',
-    'openEditModal',
-    'openGamesModal',
-    'openGuard',
-    'openStats',
-    'openUserModal',
-    'panicStop',
-    'performLogin',
-    'pickRestoreFile',
-    'refreshLibraryAPI',
-    'removeBundleGame',
-    'removeGame',
-    'renderFreeGamesUI',
-    'resolveConfirm',
-    'restartAllBots',
-    'restoreBackup',
-    'saveAllProxies',
-    'saveBundleFromTab',
-    'saveEdit',
-    'saveFreeGamesPreset',
-    'saveGames',
-    'saveGlobalPool',
-    'saveGlobalSettings',
-    'saveProxy',
-    'setStatusFilter',
-    'sortAccounts',
-    'start2FASetup',
-    'submitBulkEdit',
-    'submitBulkProxyImport',
-    'submitFreeGames',
-    'submitGuard',
-    'switchTab',
-    'testAllProxies',
-    'testWebhook',
-    'toggleAllFreeAccounts',
-    'toggleAllFreeGames',
-    'toggleCategory',
-    'toggleCategorySelect',
-    'toggleFreeAccount',
-    'toggleFreeGame',
-    'toggleFreeGameCategory',
-    'toggleFreeGameCategorySelect',
-    'toggleHideOwned',
-    'toggleIp',
-    'toggleMobileMenu',
-    'toggleProxyCategory',
-    'toggleScheduleFields',
-    'toggleTheme',
-]);
 
 // Initialize Dashboard
 window.onDashboardLoaded = function() {
-    initDelegatedEvents(document);
+    initHints(document); // clicks are already delegated from login.js
     initGameSearch();
     initBundleGameSearch();
     document.getElementById('btnBulk').addEventListener('click', openBulkModal);
@@ -298,8 +258,18 @@ window.onDashboardLoaded = function() {
         socket.on('disconnect', () => { socketLive = false; });
         socket.on('connect_error', () => { socketLive = false; });
 
-        // Pushed whenever anything about this user's accounts actually changed.
+        // Full snapshot on connect...
         socket.on('accounts', (d) => applyAccounts(d));
+
+        // ...then only what changed. Saves sending the whole list every few seconds,
+        // which matters most when the panel is open over mobile data.
+        socket.on('accounts_delta', ({ changed, removed }) => {
+            if (!Array.isArray(cachedAccounts)) return;
+            const byName = new Map(cachedAccounts.map(a => [a.username, a]));
+            (removed || []).forEach(n => byName.delete(n));
+            (changed || []).forEach(a => byName.set(a.username, a));
+            applyAccounts([...byName.values()]);
+        });
 
         socket.on('new_log', (logEntry) => {
             cachedLogs.unshift(logEntry);
@@ -486,7 +456,8 @@ function renderFaqView() {
         { code: 43, name: 'VACCheckTimedOut', desc: 'Often indicates a "zombie" session or account issue. The system will automatically disable accounts with this error to prevent loops. Try changing the password or logging in manually.' },
         { code: 63, name: 'AccountLogonDenied', desc: 'Steam Guard is required. Check your email for the code.' },
         { code: 84, name: 'RateLimitExceeded', desc: 'Too many login attempts from this IP. The bot will pause for 5 minutes and retry.' },
-        { code: 87, name: 'InvalidLoginAuthCode', desc: 'The 2FA/Steam Guard code provided was invalid.' },
+        { code: 65, name: 'TwoFactorCodeMismatch', desc: 'The shared secret is wrong or expired. The bot stops and asks you to update it.' },
+        { code: 87, name: 'InvalidLoginAuthCode', desc: 'The Steam Guard code was invalid or expired. The bot stops cleanly rather than retrying.' },
         { code: 88, name: 'AccountLogonDeniedNoMail', desc: 'Steam Guard needed but no email was sent. Usually means you need to log in manually once.' }
     ];
 
@@ -495,8 +466,40 @@ function renderFaqView() {
         { q: "What does Error 43 mean?", a: "It's a generic Steam error often related to connection issues or account flags. BruddiBooster disables these accounts automatically to prevent infinite restart loops." },
         { q: "How do I add proxies?", a: "Go to the 'Proxies' tab. You can assign a proxy to each account individually or use the Bulk Import tool." },
         { q: "Can I farm more than 32 games?", a: "Yes! If you add more than 32 games to an account, the bot will automatically rotate through them in batches every hour." },
-        { q: "Why can't I add some free games?", a: "Some games are region-locked. If the bot says 'Possible Region Lock', the game is likely not available in the account's store country." }
+        { q: "Why can't I add some free games?", a: "Some games are region-locked. If the bot says 'Possible Region Lock', the game is likely not available in the account's store country." },
+        { q: "An account says Running but the hours aren't going up.", a: "Check for a 'Blocked' badge. Steam only lets one session play at a time, so launching a game on your own PC silently takes the session from the bot. Enable 'Reclaim session' on that account if you want the bot to take it back automatically." },
+        { q: "Why do I keep getting rate limited?", a: "Too many logins from one IP. Assign proxies in the Proxies tab, and note that after the first successful login each account signs in with a saved token instead of its password, which cuts login volume a lot." },
+        { q: "What does 'Boosted' actually measure?", a: "Hours the account has gained since this panel first saw it, taken from Steam's own playtime figures. It is not an estimate based on uptime." },
+        { q: "Is my backup file safe to store anywhere?", a: "Yes. Backups contain settings, games, schedules and history but never passwords, shared secrets or login tokens." }
     ];
+
+    const features = [
+        { i: 'fa-gamepad', t: 'Game idling', d: "Pick the games an account should idle. Steam credits playtime for anything the account owns and 'plays', which is what accrues hours.", w: 'Dashboard > gamepad button on a row' },
+        { i: 'fa-rotate', t: 'Game rotation', d: HINTS.rotation, w: 'Automatic above 32 games' },
+        { i: 'fa-layer-group', t: 'Bundles', d: HINTS.bundle, w: 'Bundles tab' },
+        { i: 'fa-gift', t: 'Free games', d: HINTS.freeGames, w: 'Free Games tab' },
+        { i: 'fa-bolt', t: 'Auto-start', d: HINTS.autoStart, w: "Edit account" },
+        { i: 'fa-clock', t: 'Schedules', d: HINTS.schedule, w: 'Edit account > Only boost during set hours' },
+        { i: 'fa-shield-halved', t: 'Reclaim session', d: HINTS.autoReclaim, w: 'Edit account > Reclaim session' },
+        { i: 'fa-network-wired', t: 'Per-account proxies', d: HINTS.proxy, w: 'Proxies tab' },
+        { i: 'fa-earth-americas', t: 'Global proxy pool', d: HINTS.proxyPool, w: 'Proxies tab > Global Proxy Pool' },
+        { i: 'fa-user-plus', t: 'Auto-accept friends', d: HINTS.autoAccept, w: 'Edit account' },
+        { i: 'fa-user', t: 'Persona state', d: HINTS.personaState, w: 'Manage games dialog' },
+        { i: 'fa-pen', t: 'Custom status', d: HINTS.customStatus, w: 'Manage games dialog' },
+        { i: 'fa-key', t: 'Token sign-in', d: HINTS.refreshToken, w: 'Automatic after the first login' },
+        { i: 'fa-chart-line', t: 'Hours tracking', d: "Hours come from Steam's own playtime, not an estimate. 'Boosted' is what the account has gained since the panel first saw it; the Statistics tab charts the daily trend.", w: 'Statistics tab' },
+        { i: 'fa-triangle-exclamation', t: 'Needs attention', d: "Filters the account list to anything that isn't quietly running \u2014 errors, Guard prompts, rate limits, VAC bans and blocked sessions \u2014 so you can find problems without scrolling.", w: 'Dashboard > filter chips' },
+        { i: 'fa-memory', t: 'Resource monitor', d: HINTS.heap, w: 'Sidebar' },
+        { i: 'fa-floppy-disk', t: 'Backup & restore', d: HINTS.backup, w: 'Settings tab' },
+        { i: 'fa-terminal', t: 'Logs', d: 'Live log stream, filterable by text and by account. Errors from Steam and from the panel itself both appear here.', w: 'Logs tab' },
+        { i: 'fa-lock', t: 'Panel 2FA', d: 'Time-based 2FA on the panel login itself, separate from any Steam Guard on the bot accounts. Exporting credentials also requires a fresh code.', w: 'Settings tab' }
+    ];
+    document.getElementById('faqFeatures').innerHTML = features.map(f => `
+        <div class="feature-card">
+            <h4><i class="fa-solid ${f.i}"></i> ${esc(f.t)}</h4>
+            <p>${esc(f.d)}</p>
+            <span class="where"><i class="fa-solid fa-location-dot"></i> ${esc(f.w)}</span>
+        </div>`).join('');
 
     document.getElementById('faqCodesBody').innerHTML = codes.map(c => `<tr><td><span class="tag" style="background:var(--bg-input);">${c.code}</span></td><td style="font-weight:600;color:var(--accent);">${c.name}</td><td style="color:var(--text-muted);">${c.desc}</td></tr>`).join('');
     
@@ -625,7 +628,19 @@ function getStatusHtml(acc) {
         }
         return html;
     }
-    if(acc.status && acc.status.startsWith('Blocked')) return `<span class="st-blocked" style="cursor:help;" title="${esc(acc.lastError||'')}">Blocked</span>`;
+    if(acc.status && acc.status.startsWith('Blocked')) return `<span class="st-blocked" data-hint="${esc((acc.lastError ? acc.lastError + ' ' : '') + HINTS.blocked)}">Blocked</span>`;
+    if(acc.status === 'Playing elsewhere') {
+        // Show the countdown so it reads as "waiting to resume", not "broken".
+        let sub = '';
+        if (acc.nextRetry) {
+            const diff = acc.nextRetry - Date.now();
+            if (diff > 0) {
+                const mins = Math.ceil(diff / 60000);
+                sub = `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;"><i class="fa-solid fa-clock-rotate-left"></i> Resumes in ${mins}m</div>`;
+            }
+        }
+        return `<span class="st-elsewhere" data-hint="${esc(HINTS.elsewhere)}">In use</span>${sub}`;
+    }
     if(acc.status==='Need Guard') return `<span class="st-guard">Guard</span>`;
     if(acc.status==='Logging in...') return `<span class="st-logging">Logging in...</span>`;
     if(acc.status.includes('Rate Limit')) return `<span class="st-guard" style="cursor:help;" title="${esc(acc.lastError||'')}">${esc(acc.status)}</span>`;
@@ -640,7 +655,7 @@ function getActionsHtml(acc) {
     const profileBtn = acc.steamId ? `<a href="https://steamcommunity.com/profiles/${encodeURIComponent(acc.steamId)}" target="_blank" class="icon-btn" title="View Steam Profile"><i class="fa-solid fa-up-right-from-square"></i></a>` : '';
 
     const gameCountDisplay = acc.games.length > 32
-        ? `${acc.games.length} <i class="fa-solid fa-circle-info" title="Rotation Active"></i>`
+        ? `${acc.games.length} <span class="rot-badge">rot</span>`
         : `${acc.games.length}/32`;
 
     return `${isRunning?`<button class="icon-btn btn-stop-action" title="Stop Bot" ${act('handleAction', 'stop', acc.username)}><i class="fa-solid fa-stop"></i></button><button class="icon-btn" title="Restart Bot" ${act('handleAction', 'restart', acc.username)}><i class="fa-solid fa-rotate-right"></i></button>`:`<button class="icon-btn btn-play" title="Start Bot" ${act('handleAction', 'start', acc.username)}><i class="fa-solid fa-play"></i></button>`}<button class="icon-btn" style="width:auto;padding:0 12px;gap:6px;" title="Manage Games" ${act('openGamesModal', acc.username, acc.games, acc.customStatus||'', Number(acc.personaState))}><i class="fa-solid fa-gamepad"></i> <span style="font-size:11px;font-weight:600;">${gameCountDisplay}</span></button><button class="icon-btn" title="Boost Statistics" ${act('openStats', acc.addedAt, Number(acc.boostedHours))}><i class="fa-solid fa-chart-line"></i></button>${profileBtn}<button class="icon-btn" title="Edit Account Details" ${act('openEditModal', acc.username, acc.category||'', !!acc.autoStart)}><i class="fa-solid fa-pen"></i></button><button class="icon-btn btn-trash" title="Delete Account" ${act('deleteAccount', acc.username)}><i class="fa-solid fa-trash"></i></button>${acc.status==='Need Guard'?`<button class="icon-btn" style="color:var(--status-yellow);border-color:var(--status-yellow);" title="Enter Steam Guard" ${act('openGuard', acc.username)}><i class="fa-solid fa-key"></i></button>`:''}`;
@@ -744,7 +759,7 @@ function createAccountRow(acc) {
             (acc.vacBanned ? `<i class="fa-solid fa-ban acc-flag danger" title="VAC banned"></i>` : '') +
             (acc.locked ? `<i class="fa-solid fa-lock acc-flag danger" title="Account locked by Steam"></i>` : '') +
             (acc.limited ? `<i class="fa-solid fa-triangle-exclamation acc-flag warn" title="Limited account"></i>` : '') +
-            (acc.usingRefreshToken ? `<i class="fa-solid fa-key acc-flag ok" title="Signs in with a saved token (no password needed)"></i>` : '');
+            (acc.usingRefreshToken ? `<i class="fa-solid fa-key acc-flag ok" data-hint="${esc(HINTS.refreshToken)}"></i>` : '');
         const tr = document.createElement('tr');
         tr.id = `tr-${acc.username}`;
         tr.dataset.category = acc.category || 'Default';
@@ -758,6 +773,8 @@ function createAccountRow(acc) {
 function isHealthy(a) { return a.status === 'Running' && !a.playBlocked; }
 // Blocked counts as needing attention: the bot looks alive but earns nothing.
 function needsAttention(a) {
+    // "In use" is expected and self-healing, so it isn't a problem to chase.
+    if (a.status === 'Playing elsewhere') return false;
     if (a.playBlocked || a.vacBanned || a.locked) return true;
     return a.status !== 'Running' && a.status !== 'Stopped';
 }
@@ -997,7 +1014,7 @@ async function fetchLibrary(u) {
     list.innerHTML = '<p style="color:#666;font-size:12px;text-align:center;">Loading owned games...</p>';
     const res = await apiCall('/api/library', 'POST', { username: u });
     list.innerHTML = '';
-    ownedGames = res.games || [];
+    ownedGames = (res && res.games) || [];
     
     if(ownedGames.length === 0) {
         list.innerHTML = '<p style="color:#666;font-size:12px;text-align:center;">No games found (Start bot first)</p>';
@@ -1032,7 +1049,7 @@ function renderTags() {
     const count = currentSelectedGames.length;
     const el = document.getElementById('gameCounter');
     if (count > 32) {
-        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 32 games at once. Since you selected more, the bot will rotate through them in batches of 32 every hour."></i>`;
+        el.innerHTML = `${count} <span class="rot-badge">rotating</span>${hint('rotation')}`;
         el.style.color = 'var(--accent)';
     } else {
         el.innerText = `${count}/32`;
@@ -1084,7 +1101,16 @@ async function saveGames() {
         customStatus: document.getElementById('customStatus').value,
         personaState: parseInt(document.getElementById('personaState').value, 10) || 1
     };
-    await apiCall(`/api/accounts/${username}/games`, 'POST', payload);
+    // The real route is /api/games and it takes the username in the body. This used to
+    // POST /api/accounts/<user>/games -- a leftover from the abandoned src/ refactor
+    // that no longer exists -- then close the modal regardless, so saving silently did
+    // nothing while looking like it worked.
+    const res = await apiCall('/api/games', 'POST', { username, ...payload });
+    if (!res || !res.success) {
+        showToast((res && res.error) || 'Could not save games.', 'fa-circle-xmark');
+        return;
+    }
+    showToast(`Saved ${payload.games.length} game${payload.games.length === 1 ? '' : 's'}.`, 'fa-check');
     closeModals();
     fetchAccounts();
 }
@@ -1131,18 +1157,21 @@ async function addAllLibraryGames() {
 
 async function refreshLibraryAPI(btn) {
     const u = document.getElementById('manageGameUsername').value;
-    const icon = btn.querySelector('i');
-    icon.classList.add('fa-spin');
+    const icon = btn ? btn.querySelector('i') : null;
+    if (icon) icon.classList.add('fa-spin');
     try {
         const res = await apiCall('/api/library/refresh', 'POST', { username: u });
         if (res && res.success) {
-            showToast(`Library refreshed. Found ${res.count} games.`, 'fa-check');
-            fetchLibrary(u);
+            showToast(`Library refreshed - ${res.count} game${res.count === 1 ? '' : 's'} found.`, 'fa-check');
+            await fetchLibrary(u);
         } else {
-            showToast(res.error || "Failed to refresh", 'fa-circle-xmark');
+            // res is null when the request failed outright; don't dereference it.
+            showToast((res && res.error) || 'Could not refresh the library.', 'fa-circle-xmark');
         }
-    } catch(e) { showToast("Error", 'fa-circle-xmark'); }
-    icon.classList.remove('fa-spin');
+    } catch (e) {
+        showToast(e.message || 'Could not refresh the library.', 'fa-circle-xmark');
+    }
+    if (icon) icon.classList.remove('fa-spin');
 }
 
 // --- NEW BUNDLE TAB LOGIC ---
@@ -1194,7 +1223,7 @@ function renderBundleTags() {
     const count = currentBundleGames.length;
     const el = document.getElementById('bundleGameCounter');
     if (count > 32) {
-        el.innerHTML = `${count} <i class="fa-solid fa-circle-info" style="margin-left:5px;cursor:help;" title="Game Rotation Active: Steam allows idling max 32 games at once. Since this bundle has more, bots will rotate through them in batches of 32 every hour."></i>`;
+        el.innerHTML = `${count} <span class="rot-badge">rotating</span>${hint('rotation')}`;
         el.style.color = 'var(--accent)';
     } else {
         el.innerText = `${count}/32`;
@@ -1433,7 +1462,7 @@ async function checkProxy(username, silent = false) {
     const res = await apiCall('/api/proxy/check', 'POST', { proxy });
     
     if (res && res.success) {
-        if(!silent) showToast(`Success! IP: ${res.ip}`, 'fa-check');
+        if(!silent) { showToast(`Success! IP: ${res.ip}`, 'fa-check'); setProxyRowState(username, 'ok', 'working'); }
         input.style.borderColor = 'var(--status-green)';
         return true;
     } else {
@@ -1443,7 +1472,7 @@ async function checkProxy(username, silent = false) {
             showToast(`Proxy failed for ${username}. Replaced with spare.`, 'fa-rotate');
             return await checkProxy(username, silent);
         }
-        if(!silent) showToast(`Failed: ${res ? res.msg : 'Error'}`, 'fa-circle-xmark');
+        if(!silent) { showToast(`Failed: ${res ? res.msg : 'Error'}`, 'fa-circle-xmark'); setProxyRowState(username, 'bad', res && res.msg ? res.msg : 'failed'); }
         input.style.borderColor = 'var(--btn-red)';
         return false;
     }
@@ -1523,14 +1552,67 @@ async function submitBulkProxyImport() {
     showToast(msg, 'fa-info-circle');
 }
 
+// Marks a single proxy row so scrolling the list is informative during and after a run.
+function setProxyRowState(username, state, label) {
+    const input = document.getElementById(`proxy-${username}`);
+    if (!input) return;
+    const cell = input.closest('td');
+    if (!cell) return;
+    let tag = cell.querySelector('.proxy-state');
+    if (!tag) {
+        tag = document.createElement('span');
+        tag.className = 'proxy-state';
+        cell.style.display = 'flex';
+        cell.style.alignItems = 'center';
+        cell.style.gap = '8px';
+        cell.appendChild(tag);
+    }
+    tag.className = 'proxy-state ' + state;
+    tag.textContent = label;
+}
+
+let proxyTestRun = 0;
 async function testAllProxies() {
     const inputs = Array.from(document.querySelectorAll('.proxy-input')).filter(i => i.value.trim());
-    if(inputs.length === 0) return showToast("No proxies to test", "fa-circle-exclamation");
-    
-    showToast(`Testing ${inputs.length} proxies (5 threads)...`, "fa-stethoscope");
-    
-    let successCount = 0;
-    let removedCount = 0;
+    if (inputs.length === 0) return showToast("No proxies to test", "fa-circle-exclamation");
+
+    const runId = ++proxyTestRun;
+    const total = inputs.length;
+    let done = 0, ok = 0, swapped = 0, failed = 0;
+    const failures = [];
+    const started = Date.now();
+
+    const panel = document.getElementById('proxyTestPanel');
+    const bar = document.getElementById('proxyTestBar');
+    const failList = document.getElementById('proxyTestFailList');
+    panel.style.display = 'block';
+    failList.className = 'test-faillist';
+    failList.innerHTML = '';
+
+    const paint = () => {
+        document.getElementById('proxyTestCount').innerText = `${done} / ${total}`;
+        bar.style.width = (total ? (done / total) * 100 : 0) + '%';
+        document.getElementById('proxyTestOk').innerText = ok;
+        document.getElementById('proxyTestSwapped').innerText = swapped;
+        document.getElementById('proxyTestFail').innerText = failed;
+        // Rough ETA from throughput so far — more useful than a spinner on 245 rows.
+        const elapsed = (Date.now() - started) / 1000;
+        if (done >= 3 && done < total) {
+            const remaining = Math.round((elapsed / done) * (total - done));
+            document.getElementById('proxyTestEta').innerText = remaining > 60
+                ? `~${Math.ceil(remaining / 60)} min left` : `~${remaining}s left`;
+        } else if (done >= total) {
+            document.getElementById('proxyTestEta').innerText = `done in ${Math.round(elapsed)}s`;
+        } else {
+            document.getElementById('proxyTestEta').innerText = 'estimating...';
+        }
+        if (failures.length) {
+            failList.className = 'test-faillist show';
+            failList.innerHTML = failures.map(f => `<div>${esc(f)}</div>`).join('');
+        }
+    };
+    paint();
+
     const CONCURRENCY = 5;
     const queue = [...inputs];
     const workers = [];
@@ -1538,23 +1620,38 @@ async function testAllProxies() {
     for (let i = 0; i < CONCURRENCY; i++) {
         workers.push((async () => {
             while (queue.length > 0) {
+                if (runId !== proxyTestRun) return; // a newer run superseded this one
                 const input = queue.shift();
-                const result = await checkProxy(input.dataset.user, true);
+                const user = input.dataset.user;
+                const before = input.value.trim();
+                setProxyRowState(user, 'testing', 'testing');
+
+                const result = await checkProxy(user, true);
+                done++;
+
                 if (result) {
-                    successCount++;
+                    // checkProxy swaps in a spare when the original fails, so compare.
+                    if (input.value.trim() !== before) { swapped++; setProxyRowState(user, 'swapped', 'replaced'); }
+                    else { ok++; setProxyRowState(user, 'ok', 'working'); }
                 } else {
                     input.value = '';
                     input.style.borderColor = '';
-                    removedCount++;
+                    failed++;
+                    failures.push(`${user} — ${before}`);
+                    setProxyRowState(user, 'bad', 'removed');
                 }
+                paint();
             }
         })());
     }
-    
+
     await Promise.all(workers);
+    if (runId !== proxyTestRun) return;
     await saveAllProxies();
-    
-    showToast(`Testing Complete. ${successCount} working, ${removedCount} removed & saved.`, "fa-check-double");
+    paint();
+
+    const summary = `${ok} working` + (swapped ? `, ${swapped} replaced` : '') + (failed ? `, ${failed} removed` : '');
+    showToast(`Proxy test complete: ${summary}. Saved.`, failed ? 'fa-triangle-exclamation' : 'fa-check-double');
 }
 
 async function restartAllBots() {

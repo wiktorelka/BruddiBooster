@@ -37,6 +37,7 @@ function destroyClient(bot) {
     bot.nextRotation = null;
     bot.ownedApps = null;
     bot.ownershipReady = false;
+    bot.nextRetry = null;
 
     const client = bot.client;
     bot.client = null;
@@ -109,6 +110,55 @@ function refreshOwnedApps(username, client) {
 function botOwnsApp(bot, appid) {
     if (!bot || !bot.ownershipReady || !bot.ownedApps) return null;
     return bot.ownedApps.has(Number(appid));
+}
+
+// Retry ladder for "in use elsewhere". Keeps climbing to 10 minutes and stays there,
+// so the bot still recovers by itself whenever you finish, without hammering Steam.
+const ELSEWHERE_BACKOFF_MS = [30e3, 60e3, 120e3, 300e3, 600e3];
+// How long a bot sits at 'Crashed' before the watchdog gives it another go. Shorter
+// than the watchdog's own hourly tick, so recovery lands on the next tick rather than
+// occasionally slipping to the one after (which made the real gap up to two hours).
+const CRASH_RECOVERY_MS = 30 * 60 * 1000;
+
+function describeWait(ms) {
+    const s = Math.round(ms / 1000);
+    return s < 60 ? `${s}s` : `${Math.round(s / 60)} min`;
+}
+
+// You are signed in to the account yourself, so Steam ended the bot's session. This is
+// normal and temporary: keep checking so boosting resumes the moment you stop, but on
+// a widening interval. Reached from two places -- eresult 6 on the 'error' event (the
+// conflict existed at login) and on 'disconnected' (Steam kicked us mid-session).
+// The disconnect case used to fall through to handleCrash, which restarted three times
+// and then parked the account at 'Crashed' until someone noticed.
+function handleElsewhere(username) {
+    const bot = activeBots[username];
+    if (!bot || bot.status === 'Stopped') return;
+
+    bot.elsewhereAttempts = (bot.elsewhereAttempts || 0) + 1;
+    const attempts = bot.elsewhereAttempts;
+    const waitMs = ELSEWHERE_BACKOFF_MS[Math.min(attempts - 1, ELSEWHERE_BACKOFF_MS.length - 1)];
+
+    stopBot(username);
+    const b = activeBots[username];
+    if (!b) return;
+    b.status = 'Playing elsewhere';
+    b.lastError = `You are using this account elsewhere. Boosting resumes automatically once you stop; next check in ${describeWait(waitMs)}.`;
+    b.nextRetry = Date.now() + waitMs;
+    b.elsewhereAttempts = attempts;
+    // Not a crash, so it must not count toward the give-up counter.
+    b.restartCount = 0;
+
+    log(`${username}: in use elsewhere. Next attempt in ${describeWait(waitMs)} (try ${attempts}).`, "BOT", username);
+
+    const epoch = currentEpoch(username);
+    botTimeout(b, () => {
+        const cur = activeBots[username];
+        if (!cur || cur.status !== 'Playing elsewhere' || currentEpoch(username) !== epoch) return;
+        cur.nextRetry = null;
+        const acc = getAccount(username);
+        if (acc) startBotProcess(acc);
+    }, waitMs);
 }
 
 // --- SCHEDULING ---
@@ -345,6 +395,7 @@ function handleCrash(username, msg) {
     } else {
         log(`${username} crashed 3 times in a row. Stopping. Last Error: ${msg}`, "ERROR", username);
         bot.status = 'Crashed';
+        bot.crashedAt = Date.now();
         bot.lastError = `Too many restarts. Last error: ${msg}`;
         sendDiscordWebhook("Bot Crashed", `Account **${username}** failed to restart 3 times. Last error: ${msg}`, 15158332);
 
@@ -368,6 +419,10 @@ function rotateProxy(username) {
 }
 
 function startBotProcess(account) {
+    // Called from routes, timers and the watchdog; a deleted account can reach here as
+    // null, and destructuring it used to throw (inside a timer that means an uncaught
+    // exception, not just a failed request).
+    if (!account || !account.username) return;
     const { username, password, sharedSecret, proxy } = account;
     if (activeBots[username] && activeBots[username].client) return;
 
@@ -483,6 +538,9 @@ function startBotProcess(account) {
 
         activeBots[username].status = 'Running';
         activeBots[username].lastError = null;
+        // Reconnected, so the elsewhere conflict is resolved; start the ladder fresh.
+        activeBots[username].elsewhereAttempts = 0;
+        activeBots[username].nextRetry = null;
         const proxyMsg = (proxy && proxy.trim().length > 0) ? ` (Proxy: ${proxy})` : '';
         log(`${username} successfully logged in${proxyMsg}.`, "SUCCESS", username);
         
@@ -557,19 +615,7 @@ function startBotProcess(account) {
         }
 
         if (e.eresult === 6) { // LoggedInElsewhere
-            log(`${username}: Logged in elsewhere. Retrying in 30s...`, "WARN", username);
-            stopBot(username);
-            if (activeBots[username]) {
-                activeBots[username].status = 'Logged In Elsewhere';
-                activeBots[username].lastError = 'Account is logged in somewhere else. Retrying in 30s.';
-            }
-            const elsewhereEpoch = currentEpoch(username);
-            botTimeout(activeBots[username], () => {
-                if (activeBots[username] && activeBots[username].status === 'Logged In Elsewhere' && currentEpoch(username) === elsewhereEpoch) {
-                    const acc = getAccount(username);
-                    if (acc) startBotProcess(acc);
-                }
-            }, 30000);
+            handleElsewhere(username);
             return;
         }
 
@@ -639,6 +685,9 @@ function startBotProcess(account) {
     });
 
     client.on('disconnected', (eresult, msg) => {
+        // EResult 6 here means you started Steam or a game on this account; that is not
+        // a crash and must not burn the restart budget.
+        if (eresult === 6) return handleElsewhere(username);
         handleCrash(username, `Disconnected: ${msg} (${eresult})`);
     });
 
@@ -853,6 +902,23 @@ setInterval(() => {
     accounts.forEach(acc => {
         const bot = activeBots[acc.username];
         if (bot) {
+            // A bot that gave up used to stay dead until someone noticed: handleCrash
+            // returns early on 'Crashed', the scheduler skips it and the watchdog only
+            // looked at running bots. Give it one attempt per hour so a transient
+            // problem (Steam maintenance, a flaky proxy) heals itself.
+            if (bot.status === 'Crashed' && acc.autoStart) {
+                const since = Date.now() - (bot.crashedAt || 0);
+                if (since > CRASH_RECOVERY_MS) {
+                    log(`${acc.username} watchdog: retrying a crashed bot after ${Math.round(since / 60000)} min.`, "WATCHDOG", acc.username);
+                    bot.restartCount = 0;
+                    bot.crashedAt = Date.now();
+                    bot.status = 'Restarting...';
+                    destroyClient(bot);
+                    botTimeout(bot, () => { const a2 = getAccount(acc.username); if (a2) startBotProcess(a2); }, 5000);
+                }
+                return;
+            }
+
             const offline = bot.status === 'Running' && (!bot.client || !bot.client.steamID);
             const stuck = bot.status === 'Logging in...' && bot.loginStartTime && (Date.now() - bot.loginStartTime > 300000);
             if (offline || stuck) {
@@ -960,4 +1026,4 @@ function queueFreeGames(username, games, autoStop = false) {
     pendingFreeGames[username] = { games, autoStop };
 }
 
-module.exports = { isWithinSchedule, recordDailyHours, startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts };
+module.exports = { isWithinSchedule, recordDailyHours, refreshOwnedApps, startBotProcess, stopBot, getActiveBots, getGameName, searchGames, sendDiscordWebhook, getGamePayload, updateBotGames, requestFreeGames, queueFreeGames, flushDirtyAccounts };

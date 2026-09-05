@@ -1,0 +1,82 @@
+# Hardened systemd unit for BruddiBooster.
+#
+#   sudo cp deploy/bruddibooster.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bruddibooster
+#   journalctl -u bruddibooster -f
+#
+# Adjust User/WorkingDirectory if you don't run as `steam` from /home/steam/hourboosttest.
+
+[Unit]
+Description=BruddiBooster Steam hour booster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=steam
+Group=steam
+WorkingDirectory=/home/steam/hourboosttest
+ExecStart=/usr/bin/node --max-old-space-size=3072 server.js
+
+# SIGTERM triggers the graceful shutdown: bots are logged off and pending hours
+# flushed. Give it room to finish before being killed.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=always
+RestartSec=10
+
+Environment=NODE_ENV=production
+# Trust the reverse proxy's forwarded client address. Only set this when a proxy
+# really is in front, otherwise callers can spoof their own IP past the rate limiter.
+#Environment=TRUST_PROXY=1
+
+# Which interface to listen on. Pick the one that matches where your proxy runs:
+#
+#   127.0.0.1        proxy runs on THIS machine (plain nginx on the same host)
+#   192.168.50.40    proxy runs on ANOTHER machine on the LAN  <-- e.g. Nginx Proxy
+#                    Manager on a separate box or in Docker elsewhere
+#   0.0.0.0          every interface (only with a firewall in front)
+#
+# 127.0.0.1 is the tightest option but is unreachable from any other host, so it will
+# break an off-box proxy. If you use a LAN address, restrict the port to the proxy:
+#   sudo ufw allow from <proxy-ip> to any port 3000 proto tcp
+#   sudo ufw deny 3000
+# Leave these unset to use .env instead.
+#Environment=HOST=0.0.0.0
+#Environment=PORT=3000
+
+# --- Hardening ---
+# A compromised bot process should not be able to touch the rest of the machine.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The only paths it may write to.
+ReadWritePaths=/home/steam/hourboosttest
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+# Keep it from taking the box down if something ever runs away again.
+MemoryMax=4G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
